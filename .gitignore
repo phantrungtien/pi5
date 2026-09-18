@@ -1,0 +1,20 @@
+# Model khong dung toi. Chi giu ba cai code that su nap:
+#   yolo11n-pose-320.onnx  service dang chay (--model)
+#   yolo11n-pose-416.onnx  mac dinh cua person_follow_reid.POSE_ONNX
+#   osnet_x0_25.onnx       ReID 512-D
+# Cac bien the 224/256/288/int8/yolov8n-drone sinh lai duoc — xem README.
+*.onnx
+!tracking_pi5/yolo11n-pose-320.onnx
+!tracking_pi5/yolo11n-pose-416.onnx
+!tracking_pi5/osnet_x0_25.onnx
+
+__pycache__/
+*.pyc
+*.log
+*.bak
+*.bak-*
+*.orig
+.~lock.*#
+frame.jpg
+khung/
+fire-venv/

@@ -1,0 +1,39 @@
+# /etc/systemd/system/mjpeg-stream.service
+[Unit]
+Description=MJPEG camera stream + bam nguoi (cong 8080)
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+# Mot tien trinh duy nhat: run_gui.py mo /dev/video0 bang gst (MJPG, webcam nen
+# san trong phan cung) roi bam nguoi va phat MJPEG ra 8080.
+#
+# KHONG con v4l2_camera_node: no chi lam duoc YUYV (Humble chua giai ma MJPG), va
+# doi YUYV->RGB8 720p bang CPU thi nguon tut xuong 0.6-0.8 Hz khi ONNX dang chay.
+# Doi lai mat topic /image_raw — chua ai dung, GUI chi doc HTTP 8080.
+#
+# rclpy van co: /follow/command + /follow/target publish that.
+#
+# --model 320 + --stream-every 1: phat MOI khung pf ve xong, hop khop 100% voi hinh,
+# ~9 fps (416 + every 2 cu: 3.6 fps). Doi lai sot nguoi o xa — bo --model de ve 416.
+# WiFi 5GHz (5785, -43 dBm) da do chiu duoc ca 15 fps / 1.15 MB/s, nen 9 fps con du.
+ExecStartPre=-/usr/bin/docker rm -f drone-cam
+ExecStart=/usr/bin/docker run --rm --name drone-cam \
+    --device /dev/video0 --group-add video --network host \
+    -v /home/hoaibac/mjpeg_server.py:/app/mjpeg_server.py \
+    -v /home/hoaibac/fire_tracker.py:/app/fire_tracker.py:ro \
+    -v /home/hoaibac/phantrungtien-fire-detection/models:/app/fire-models:ro \
+    -v /home/hoaibac/tracking_pi5:/app/tracking_pi5 \
+    drone-vision:humble-gst \
+    bash -lc "source /opt/ros/humble/setup.bash; cd /app/tracking_pi5; \
+      exec python3 -u run_gui.py --detect-only --threads 2 --device /dev/video0 \
+        --width 960 --height 540 --fps 15 --quality 70 --stream-every 1 \
+        --model yolo11n-pose-320.onnx --threads 3 \
+        --fire-model /app/fire-models/best_nano_111_320.onnx --fire-conf 0.2 --fire-threads 1 --fire-hz 3"
+ExecStop=/usr/bin/docker stop -t 5 drone-cam
+User=hoaibac
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
