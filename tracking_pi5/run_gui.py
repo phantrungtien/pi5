@@ -58,7 +58,7 @@ class GstCap:
     băng thông, và `jpegdec` rẻ hơn nhiều so với chuyển màu YUYV 720p bằng CPU.
     """
 
-    def __init__(self, device, w, h, fps, stale=2.0, restart_after=5.0, first_grace=20.0):
+    def __init__(self, device, w, h, fps, stale=1.0, restart_after=1.5, first_grace=20.0):
         self.w, self.h, self.n = w, h, w * h * 3
         self.dev, self.fps = device, fps
         # Do that 18/09/2026: webcam UVC (Microdia 0c45:636b) ngung day khung luc
@@ -123,7 +123,7 @@ class GstCap:
         `_pump` cu thoat khoi stdout.read() dang ket — khong co cach nao danh thuc no
         tu ben ngoai."""
         while self.alive:
-            time.sleep(1.0)
+            time.sleep(0.25)  # 23/10: nhip kiem 1 s lam mo lai cham toi 1 s
             # Chua co khung nao thi dem tu luc dung gst va cho `first_grace`; co roi
             # thi dem tu khung cuoi va cho `restart_after`.
             if self.t:
