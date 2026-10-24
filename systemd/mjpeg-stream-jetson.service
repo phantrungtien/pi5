@@ -58,7 +58,7 @@ ExecStart=/bin/bash -c "source /opt/ros/humble/setup.bash; source /home/robomang
       --h264 100.96.37.111:5600 --h264-kbps 1500 --h264-fb-port 5601 --h264-kbps-min 1000 --hl-ae 100 --gamma 1.2 --no-mjpeg --stamp \
       --fire-model /home/robomango/phantrungtien-fire-detection/models/best_nano_111_640.onnx \
       --fire-conf 0.2 --fire-threads 1 --fire-hz 5 --fire-save /home/robomango/fire_dataset \
-      --fire-verify /home/robomango/jetson/hidden-lyceum-473116-p8-1f580efa4c6d.json"
+      --fire-verify /home/robomango/jetson/hidden-lyceum-473116-p8-1f580efa4c6d.json --fire-scan 3"
 # 23/10/2026 --fire-save: khung co hop lua + nhan YOLO -> ~/fire_dataset/<ngay>/ (<= 1 khung/s,
 # toi da 5 GB moi lan chay, dung khi dia con < 10 GB) de gom anh bao nham (thanh an toan vang
 # cua robot bi bao Fire 18/19 khung) ma train lai. Bo co nay = tat luu.
@@ -69,6 +69,9 @@ ExecStart=/bin/bash -c "source /opt/ros/humble/setup.bash; source /home/robomang
 # 24/10 18:12 --fire-conf 0.35 -> 0.2 (co Gemini loc bao nham): anh dien thoai 6 hinh lua YOLO cho
 # 0.37/0.21/0.13 nen chi 1 hinh qua, hop chop tat quanh 0.35. Chi YOLO (mat mang) van doi 0.35 -
 # YOLO_ONLY trong fire_verify.py. fire_locator min_score cung phai ha (Firefighting-drone).
+# 24/10 18:28: Gemini 2/2 (ca hai model noi lua moi tinh, xem WAIT2). --fire-scan 3: KHI ARM (hoac
+# /fire/scan true) Gemini quet nguyen khung moi 3 s, so voi YOLO, ghi [scan] + ~/fire_dataset/scan/<ngay>/
+# (scan.jsonl + khung lech). ~$0.85/gio bay. Khong anh huong ROS. Bo co nay = tat.
 # So nguoi ra ROS 2 /vision/person_count (std_msgs/Int32) qua Tailscale - xem
 # cyclonedds_tailscale.xml. Tram mat dat phai dat CUNG hai bien nay moi thay topic.
 Environment=RMW_IMPLEMENTATION=rmw_cyclonedds_cpp

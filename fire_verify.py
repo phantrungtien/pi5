@@ -33,11 +33,12 @@ import requests
 
 from fire_tracker import iou
 
-# Hoi CA HAI cung luc, lay cau tra loi ve truoc: Gemini cham theo dot (24/10 14:10 3.1-flash-lite 5-8 s, cung luc
-# 3.5-flash-lite p50 1.4 s / max 1.7 s), hai model hiem khi cham cung nhau. Ca hai deu 48/48 tren ~/fire_bench.
+# Hoi CA HAI cung luc, LUA chi khi CA HAI noi lua (24/10 18:28 theo y nguoi dung; truoc do lay cau ve truoc):
+# anh lua ve/tren man hinh hai model bat dong (3.1 khong, 3.5 lua), lua that ca hai 48/48 tren ~/fire_bench.
+# Gemini cham theo dot (24/10 14:10 3.1-flash-lite 5-8 s, cung luc 3.5 p50 1.4 s) -> WAIT2.
 MODELS = ("gemini-3.1-flash-lite", "gemini-3.5-flash-lite")
-HEDGE = 0.0     # ponytail: model thu hai goi sau HEDGE s. 0 = cung luc (x2 credit, ~$4-5/ngay dung yen o lab);
-                # 2.0 = chi goi khi model dau cham (~x1.3 credit), van cat duoc dot cham 5-8 s
+WAIT2 = 3.0     # mot model da noi lua, model kia cham qua WAIT2 s -> nhan mot phieu (log ghi ten mot model).
+                # Dang bay: cho them = lua troi khoi khung. Doi 2/2 tuyet doi thi dat 99.
 WORKERS = 3     # vet khac nhau hoi song song: anh lua khong xep hang sau bao nham trong lab
 PROMPT = ("This image is a crop around a region that the onboard fire detector of a firefighting drone flagged "
           "as fire. Is there real fire (visible flames) in it? Smoke alone, sunlight, lamps, reflections and "
@@ -51,6 +52,16 @@ RECHECK1 = 1.0  # bi bac LAN DAU -> hoi lai sau 1 s voi khung khac. 24/10 15:32 
 YOLO_ONLY = 0.35  # chi YOLO (mat mang/Gemini cham) thi doi diem nhu truoc khi co Gemini. 24/10 18:12 ha
                   # --fire-conf 0.35 -> 0.2: anh dien thoai 6 hinh lua YOLO cho 0.37/0.21/0.13, chi qua 1
 SIDE = 384      # canh dai anh gui; anh cat ~1180 token/lan
+# Ghi song song (--fire-scan): Gemini quet NGUYEN khung tim moi vung lua, so voi YOLO cung khung, chi ghi log
+# + luu khung lech (YOLO sot = anh de train lai). Khong anh huong ROS. 24/10 tren 12 khung anh dien thoai 6 hinh
+# lua: 3.1 dung 6/6 o 11/12 khung, YOLO 0.2 chi 1-3; ~1316 token vao + 255 ra = ~$0.0007/lan, p50 2.7 s qua 4G.
+SCAN_MODEL = "gemini-3.1-flash-lite"  # 3.5 khoanh them hinh bi cat mep (6-8 hop), dat hon 1.5x
+SCAN_PROMPT = ("Find every region of this drone camera frame that shows flames, including flames in photos, "
+               "drawings or on screens. For each give box_2d [ymin, xmin, ymax, xmax] normalized to 0-1000, and "
+               "real=true only if it is actual fire in the scene (not a picture or a screen). Empty list if none.")
+SCAN_SCHEMA = {"type": "OBJECT", "properties": {"fires": {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {
+    "box_2d": {"type": "ARRAY", "items": {"type": "INTEGER"}}, "real": {"type": "BOOLEAN"}},
+    "required": ["box_2d", "real"]}}}, "required": ["fires"]}
 
 
 def crop(img, box):
@@ -72,6 +83,13 @@ def _gan(a, b):
     return abs(a[0] + a[2] - b[0] - b[2]) / 2 <= s and abs(a[1] + a[3] - b[1] - b[3]) / 2 <= s
 
 
+def so_khop(gem, yolo):
+    """Hop Gemini vs hop YOLO cung khung -> (khop, chi Gemini thay, chi YOLO thay): ba danh sach hop."""
+    cung = lambda a, b: _gan(a, b) or _gan(b, a)  # noqa: E731 - hop Gemini rong hon hop YOLO
+    khop = [y for y in yolo if any(cung(g, y) for g in gem)]
+    return khop, [g for g in gem if not any(cung(g, y) for y in yolo)], [y for y in yolo if y not in khop]
+
+
 def _di(s, t, now):
     """O trang thai + vet -> vet duoc di ra ROS va hien len video. Mot luat cho ca hai: thay gi tren video la
     drone dang nham toi do."""
@@ -81,8 +99,8 @@ def _di(s, t, now):
 
 
 class FireVerify:
-    def __init__(self, key, models=MODELS):
-        self.models, self.sa, self.api_key = models, None, None
+    def __init__(self, key, models=MODELS, scan_dir=None):
+        self.models, self.sa, self.api_key, self.scan_dir = models, None, None, scan_dir
         if key is not None:  # doc khoa NGAY: sai duong dan thi keu luc khoi dong, khong phai luc dang bay
             if key.endswith(".json"):
                 self.sa = json.load(open(key))
@@ -93,10 +111,11 @@ class FireVerify:
         self.down = 0.0  # truoc moc nay (monotonic) coi nhu mat mang
         self.q = queue.Queue()
         self._tok, self._exp, self._prune = None, 0.0, 0.0
+        self._scan_next, self._scan_busy = 0.0, False
         self.pool = cf.ThreadPoolExecutor(max_workers=WORKERS * len(models))
         for _ in range(WORKERS):
             threading.Thread(target=self._worker, daemon=True).start()
-        print(f"[ai] Gemini {' + '.join(models)} song song xac nhan vet lua (giu toi {HOLD:g} s)", flush=True)
+        print(f"[ai] Gemini {' + '.join(models)} cung noi lua moi tinh (giu toi {HOLD:g} s)", flush=True)
 
     def filter(self, img, tracks, now=None):
         """Vet da xac nhan cua YOLO -> vet duoc phep ra ROS. Goi moi khung tu luong lua."""
@@ -157,29 +176,80 @@ class FireVerify:
                 print(f"[ai] loi {type(e).__name__}: {str(e)[:120]} -> chi YOLO {DOWN:g} s", flush=True)
 
     def ask(self, jpg):
-        """JPEG bytes -> (co lua that?, model tra loi). Goi cac model song song (model sau cach HEDGE s), lay
-        cau tra loi DAU TIEN thanh cong; model loi thi cho model kia, tat ca loi moi nem loi (-> chi YOLO)."""
-        futs, err = {}, None
-        for i, m in enumerate(self.models):
-            futs[self.pool.submit(self._ask1, m, jpg)] = m
-            if HEDGE > 0 and i + 1 < len(self.models):
-                for f in cf.wait(futs, timeout=HEDGE, return_when=cf.FIRST_COMPLETED)[0]:
-                    if f.exception() is None:
-                        return f.result(), futs[f]
-        for f in cf.as_completed(futs):  # model cham hon van chay tiep o nen, ket qua bo
-            if f.exception() is None:
-                return f.result(), futs[f]
-            err = f.exception()
+        """JPEG bytes -> (co lua that?, model). Hoi cac model song song; LUA chi khi moi model tra loi duoc deu
+        noi lua. Mot model noi khong -> khong NGAY (khong cho model kia). Model loi thi bo phieu cua no; noi lua
+        roi ma model kia cham qua WAIT2 -> nhan mot phieu. Tat ca loi moi nem loi (-> chi YOLO)."""
+        futs = {self.pool.submit(self._ask1, m, jpg): m for m in self.models}
+        yes, err, end, cho = [], None, None, set(futs)
+        while cho:  # model cham van chay tiep o nen, ket qua bo
+            xong, cho = cf.wait(cho, timeout=None if end is None else max(0.0, end - time.monotonic()),
+                                return_when=cf.FIRST_COMPLETED)
+            if not xong:
+                break
+            for f in xong:
+                if f.exception() is not None:
+                    err = f.exception()
+                elif not f.result():
+                    return False, futs[f]
+                else:
+                    yes.append(futs[f])
+                    end = end or time.monotonic() + WAIT2
+        if yes:
+            return True, "+".join(yes)
         raise err
+
+    def scan(self, img, tracks, every):
+        """Ghi song song: moi `every` s gui nguyen khung cho Gemini o luong rieng, so voi hop YOLO (CHUA loc)
+        cua chinh khung do. Goi moi khung tu luong lua; khong tra gi, khong dung toi ROS."""
+        now = time.monotonic()
+        if self._scan_busy or now < self._scan_next:
+            return
+        self._scan_busy, self._scan_next = True, now + every
+        yolo = [(tuple(int(v) for v in t.box), round(float(t.score), 2)) for t in tracks]
+        threading.Thread(target=self._scan1, args=(img.copy(), yolo), daemon=True).start()
+
+    def _scan1(self, img, yolo):
+        t0, wall = time.monotonic(), time.time()
+        try:
+            h, w = img.shape[:2]
+            jpg = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 85])[1].tobytes()
+            gem = [((int(b[1] * w / 1000), int(b[0] * h / 1000), int(b[3] * w / 1000), int(b[2] * h / 1000)),
+                    bool(f["real"])) for f in self._post(SCAN_MODEL, jpg, SCAN_PROMPT, SCAN_SCHEMA, 1024, 15)["fires"]
+                   if len(b := f["box_2d"]) == 4]
+            dt = time.monotonic() - t0
+            khop, chi_g, chi_y = so_khop([b for b, _ in gem], [b for b, _ in yolo])
+            that = sum(r for _, r in gem)
+            print(f"[scan] Gemini {len(gem)} hop ({that} lua that) | YOLO {len(yolo)} | khop {len(khop)}, YOLO sot "
+                  f"{len(chi_g)}, chi YOLO {len(chi_y)} ({dt:.1f} s)", flush=True)
+            if self.scan_dir:
+                import os
+                d = os.path.join(self.scan_dir, time.strftime("%Y%m%d", time.localtime(wall)))
+                os.makedirs(d, exist_ok=True)
+                ten = None
+                if chi_g or chi_y:  # lech -> luu khung: YOLO sot lua la anh can nhat de train lai
+                    ten = time.strftime("%H%M%S", time.localtime(wall)) + f"_{int(wall * 1000) % 1000:03d}.jpg"
+                    cv2.imwrite(os.path.join(d, ten), img)
+                with open(os.path.join(d, "scan.jsonl"), "a") as f:
+                    f.write(json.dumps({"t": round(wall, 3), "s": round(dt, 2), "jpg": ten,
+                                        "gemini": [list(b) + [r] for b, r in gem],
+                                        "yolo": [list(b) + [sc] for b, sc in yolo]}) + "\n")
+        except Exception as e:  # noqa: BLE001 - chi la ghi log: loi gi cung bo qua, khong cham toi xac nhan
+            print(f"[scan] loi {type(e).__name__}: {str(e)[:120]}", flush=True)
+        finally:
+            self._scan_busy = False
 
     def _ask1(self, model, jpg):
         """Mot lan goi mot model -> True neu thay lua that."""
+        return bool(self._post(model, jpg, PROMPT, SCHEMA, 256, 8)["fire"])
+
+    def _post(self, model, jpg, prompt, schema, max_out, read_timeout):
+        """Anh + cau hoi -> JSON theo schema."""
         # temperature 0: cung anh cung dap an (24/10/2026 mac dinh 1.0 tra T,F,F cho cung mot khung).
-        # Google khuyen giu 1.0 cho Gemini 3 (so lap/giam chat luong) - dau ra chi 1 bool nen thu 0.
-        gc = {"responseMimeType": "application/json", "responseSchema": SCHEMA, "maxOutputTokens": 256,
+        # Google khuyen giu 1.0 cho Gemini 3 (so lap/giam chat luong) - dau ra chi JSON ngan nen thu 0.
+        gc = {"responseMimeType": "application/json", "responseSchema": schema, "maxOutputTokens": max_out,
               "temperature": 0, "thinkingConfig": {"thinkingLevel": "MINIMAL"}}
         body = {"contents": [{"role": "user", "parts": [
-            {"inlineData": {"mimeType": "image/jpeg", "data": base64.b64encode(jpg).decode()}}, {"text": PROMPT}]}],
+            {"inlineData": {"mimeType": "image/jpeg", "data": base64.b64encode(jpg).decode()}}, {"text": prompt}]}],
             "generationConfig": gc}
         if self.sa:
             url = (f"https://aiplatform.googleapis.com/v1/projects/{self.sa['project_id']}/locations/global/"
@@ -188,9 +258,9 @@ class FireVerify:
         else:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
             h = {"x-goog-api-key": self.api_key}
-        r = requests.post(url, headers=h, json=body, timeout=(3, 8))
+        r = requests.post(url, headers=h, json=body, timeout=(3, read_timeout))
         r.raise_for_status()
-        return bool(json.loads(r.json()["candidates"][0]["content"]["parts"][-1]["text"])["fire"])
+        return json.loads(r.json()["candidates"][0]["content"]["parts"][-1]["text"])
 
     def _token(self):
         """Service account -> access token (pyjwt + cryptography co san tren Jetson), lam moi truoc 5 phut."""
@@ -289,23 +359,52 @@ def _selfcheck():
     n = len(asked)
     assert fv.filter(img, [d]) == [d] and len(asked) == n, "trong DOWN: di ngay, khong hoi"
 
-    hai = FireVerify(None, models=("cham", "nhanh"))  # goi song song: lay cau tra loi ve truoc
-    hai._ask1 = lambda m, jpg: (time.sleep(0.4), False)[1] if m == "cham" else True
+    global WAIT2
+    hai = FireVerify(None, models=("cham", "nhanh"))  # 2/2: ca hai noi lua moi tinh
+    tra = {"cham": True, "nhanh": True}
+    hai._ask1 = lambda m, jpg: (time.sleep(0.2) if m == "cham" else None, tra[m])[1]
+    assert hai.ask(b"") == (True, "nhanh+cham"), "ca hai lua -> lua, cho model cham"
+    tra["nhanh"] = False
     t0 = time.monotonic()
-    assert hai.ask(b"") == (True, "nhanh") and time.monotonic() - t0 < 0.3, "khong cho model cham"
+    assert hai.ask(b"") == (False, "nhanh") and time.monotonic() - t0 < 0.15, "mot model noi khong -> khong ngay"
+    tra.update(nhanh=True, cham=False)
+    assert hai.ask(b"") == (False, "cham"), "nhanh noi lua, cham noi khong -> khong"
+    WAIT2, tra["cham"] = 0.05, True
+    t0 = time.monotonic()
+    assert hai.ask(b"") == (True, "nhanh") and time.monotonic() - t0 < 0.15, "model kia cham qua WAIT2 -> 1 phieu"
+    WAIT2 = 3.0
 
     def nhanh_loi(m, jpg):
         if m == "nhanh":
             raise requests.ConnectionError("x")
-        return False
+        return tra[m]
     hai._ask1 = nhanh_loi
-    assert hai.ask(b"") == (False, "cham"), "model loi -> lay model kia"
+    assert hai.ask(b"") == (True, "cham"), "model loi -> lay phieu model kia"
     hai._ask1 = lambda m, jpg: (_ for _ in ()).throw(requests.ConnectionError(m))
     try:
         hai.ask(b"")
         raise AssertionError("ca hai loi phai nem loi")
     except requests.ConnectionError:
         pass
+
+    g = [(100, 100, 200, 220), (300, 100, 400, 200), (600, 50, 700, 150)]  # 3 hinh lua, YOLO thay 1 + 1 bao nham
+    y = [(110, 120, 190, 210), (900, 600, 950, 650)]
+    assert so_khop(g, y) == ([y[0]], g[1:], [y[1]])
+    assert so_khop([], y) == ([], [], y) and so_khop(g, []) == ([], g, [])
+
+    import tempfile
+    sc = FireVerify(None, scan_dir=tempfile.mkdtemp())
+    sc._post = lambda *a: {"fires": [{"box_2d": [139, 78, 306, 156], "real": True}]}  # 0-1000 -> (100,100,200,220)
+    sc.scan(img, [a, c], every=10)
+    sc.scan(img, [a], every=10)  # trong `every` s / dang chay: bo qua
+    for _ in range(200):
+        if not sc._scan_busy:
+            break
+        time.sleep(0.01)
+    import glob as _g
+    rec = [json.loads(x) for f in _g.glob(sc.scan_dir + "/*/scan.jsonl") for x in open(f)]
+    assert len(rec) == 1 and rec[0]["gemini"] == [[99, 100, 199, 220, True]] and len(rec[0]["yolo"]) == 2
+    assert rec[0]["jpg"], "lech (YOLO c khong khop) -> luu khung"
     print("OK")
 
 

@@ -80,6 +80,7 @@ _fire_slot = None  # (khung, meta) cho _fire_loop: meta (gio chup, vung cat) di 
 _fire_ros = None   # _FireRos khi co ROS
 _fire_saver = None  # _FireSaver khi --fire-save
 _fire_verify = None  # fire_verify.FireVerify khi --fire-verify: Gemini loc vet truoc khi ra ROS
+_fire_scan = 0.0     # --fire-scan N: Gemini quet nguyen khung moi N s khi drone arm / /fire/scan true
 
 
 class _FireSaver:
@@ -166,6 +167,8 @@ def _fire_loop(tracker):
         if _fire_saver is not None:
             _fire_saver(img, tracks, meta)  # ca hop Gemini bac: chinh la anh bao nham can de train lai
         if _fire_verify is not None:
+            if _fire_scan and _fire_ros is not None and (_fire_ros.armed or _fire_ros.scan_cmd):
+                _fire_verify.scan(img, tracks, _fire_scan)  # hop YOLO CHUA loc: so ca hop Gemini bac
             tracks = _fire_verify.filter(img, tracks)
         if meta is not None and _fire_ros is not None:
             _fire_ros.publish_fire(tracks, meta, img.shape, tracker.names)
@@ -196,6 +199,17 @@ class _FireRos:
         self.pub = self.node.create_publisher(Detection2DArray, "/fire/detections", 10)
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.node.create_subscription(Float32, "/fire/zoom", self._on_zoom, latched)
+        # --fire-scan chi chay khi dang bay (arm) hoac bat tay: ros2 topic pub -t 3 /fire/scan std_msgs/msg/Bool
+        # "{data: true}". Best effort: khop ca publisher reliable lan best effort (MAVROS).
+        from rclpy.qos import qos_profile_sensor_data
+        from std_msgs.msg import Bool
+        self.armed = self.scan_cmd = False
+        self.node.create_subscription(Bool, "/fire/scan", self._on_scan, qos_profile_sensor_data)
+        try:
+            from mavros_msgs.msg import State
+            self.node.create_subscription(State, "/mavros/state", self._on_state, qos_profile_sensor_data)
+        except ImportError:
+            pass
         self.ex = SingleThreadedExecutor()
         self.ex.add_node(self.node)
         try:
@@ -212,6 +226,16 @@ class _FireRos:
 
     def _cap(self):
         return self.cap_ref[0] if self.cap_ref else None
+
+    def _on_scan(self, msg):
+        if bool(msg.data) != self.scan_cmd:
+            print(f"[scan] /fire/scan {'BAT' if msg.data else 'TAT'}", flush=True)
+        self.scan_cmd = bool(msg.data)
+
+    def _on_state(self, msg):
+        if bool(msg.armed) != self.armed:
+            print(f"[scan] drone {'ARM' if msg.armed else 'DISARM'}", flush=True)
+        self.armed = bool(msg.armed)
 
     def _on_zoom(self, msg):
         cap = self._cap()
@@ -900,6 +924,9 @@ def main():
     p.add_argument("--fire-verify", default=None, metavar="KEY",
                    help="Gemini xac nhan vet lua truoc khi ra /fire/detections: khoa service account "
                         ".json (Vertex) - xem fire_verify.py")
+    p.add_argument("--fire-scan", type=float, default=0.0, metavar="S",
+                   help="can --fire-verify: Gemini quet nguyen khung moi S s, so voi YOLO, chi ghi log + luu khung "
+                        "lech vao <--fire-save>/scan. Chi khi drone arm hoac /fire/scan true (~$0.0007/lan)")
     a = p.parse_args()
 
     import person_follow_reid as pf
@@ -912,7 +939,7 @@ def main():
         pf.HFOV_DEG = float(np.degrees(2 * np.arctan(np.tan(np.radians(pf.HFOV_DEG) / 2) / a.zoom)))
         print(f"[follow] zoom {a.zoom:g} -> HFOV {pf.HFOV_DEG:.1f} deg", flush=True)
 
-    global _fire_tracker, _fire_period, _fire_ros, _fire_saver, _fire_verify
+    global _fire_tracker, _fire_period, _fire_ros, _fire_saver, _fire_verify, _fire_scan
     if a.fire_model:
         from fire_tracker import FireTracker
 
@@ -925,8 +952,13 @@ def main():
         if a.fire_verify:
             try:  # khoa hong/thieu: chi YOLO, van stream - drone khong duoc mu vi Gemini
                 from fire_verify import FireVerify
-                _fire_verify = FireVerify(a.fire_verify)
+                _fire_verify = FireVerify(a.fire_verify,
+                                          scan_dir=os.path.join(a.fire_save, "scan") if a.fire_save else None)
                 _fire_tracker.tag = _fire_verify.tag
+                _fire_scan = a.fire_scan
+                if _fire_scan:
+                    print(f"[scan] Gemini quet nguyen khung moi {_fire_scan:g} s khi drone ARM hoac /fire/scan true",
+                          flush=True)
             except Exception as e:  # noqa: BLE001
                 print(f"[ai] tat Gemini ({type(e).__name__}: {e}) -> chi YOLO", flush=True)
         # KHONG gan mj._tracker: lua van ve hop len video, nhung /status + ROS chi bao nguoi.
