@@ -47,7 +47,7 @@ ExecStartPre=+/bin/sh -c 'G=/sys/class/devfreq/17000000.gpu; cat $G/max_freq > $
 # 23/10/2026: source them ~/Firefighting-drone (fire_drone): ground_range chay TRONG run_gui (an
 # nhanh xam toan canh, khong qua DDS), /fire/zoom doi vung cat luc dang bay, hop lua ->
 # /fire/detections cho fire_locator. Thieu workspace thi van stream, chi khong do mat dat.
-ExecStart=/bin/bash -c "source /opt/ros/humble/setup.bash; source /home/robomango/Firefighting-drone/install/setup.bash; cd /home/robomango/pi5/tracking_pi5; \
+ExecStart=/bin/bash -c "source /opt/ros/humble/setup.bash; source /home/robomango/Firefighting-drone/install/setup.bash; cd /home/robomango/jetson/tracking_pi5; \
     exec python3 -u run_gui.py --detect-only --device auto \
       --width 1280 --height 720 --cam-width 3840 --cam-height 2160 --fps 30 --quality 80 --stream-every 1 \
       --model yolo11n-pose-960x544-raw.onnx --conf 0.3 --threads 3 \
@@ -60,7 +60,7 @@ ExecStart=/bin/bash -c "source /opt/ros/humble/setup.bash; source /home/robomang
 # So nguoi ra ROS 2 /vision/person_count (std_msgs/Int32) qua Tailscale - xem
 # cyclonedds_tailscale.xml. Tram mat dat phai dat CUNG hai bien nay moi thay topic.
 Environment=RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-Environment=CYCLONEDDS_URI=file:///home/robomango/pi5/cyclonedds_tailscale.xml
+Environment=CYCLONEDDS_URI=file:///home/robomango/jetson/cyclonedds_tailscale.xml
 User=robomango
 SupplementaryGroups=video
 Restart=always

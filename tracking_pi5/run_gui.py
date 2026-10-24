@@ -877,7 +877,7 @@ def main():
                         "/status van chay. Dung kem --h264 khi bay qua 4G")
     p.add_argument("--h264-preset", default="superfast")
     p.add_argument("--stamp", action="store_true",
-                   help="ve gio chup vao goc duoi trai de do tre (pi5/latency_stamp.py o tram)")
+                   help="ve gio chup vao goc duoi trai de do tre (jetson/latency_stamp.py o tram)")
     p.add_argument("--stream-every", type=int, default=1,
                    help="chi nen 1 trong N khung ra HTTP; vong dieu khien van chay du nhip")
     p.add_argument("--model", default=None,

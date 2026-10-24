@@ -20,9 +20,9 @@ Ba thứ **không nằm trong repo này**, phải có sẵn trên máy:
 ## Dựng lại từ đầu
 
 ```bash
-git clone https://github.com/phantrungtien/pi5.git
-cp -r pi5/{*.py,*.sh,*.xml,Dockerfile.gst,restore_drone_cam.txt} ~/
-cp -r pi5/tracking_pi5 pi5/drone-img ~/
+git clone https://github.com/phantrungtien/pi5.git jetson
+cp -r jetson/{*.py,*.sh,*.xml,Dockerfile.gst,restore_drone_cam.txt} ~/
+cp -r jetson/tracking_pi5 jetson/drone-img ~/
 
 # 1. image nen: ROS 2 Humble + MAVROS + OpenCV + ONNX Runtime
 cd ~/drone-img && docker build -t drone-vision:humble .
@@ -31,7 +31,7 @@ cd ~ && docker build -t drone-vision:humble-gst -f Dockerfile.gst .
 # 3. models cho phan lua
 git clone https://github.com/phantrungtien/fire-detection.git ~/phantrungtien-fire-detection
 
-sudo cp pi5/systemd/mjpeg-stream.service /etc/systemd/system/
+sudo cp jetson/systemd/mjpeg-stream.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now mjpeg-stream
 ```
 

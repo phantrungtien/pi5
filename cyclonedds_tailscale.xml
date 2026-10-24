@@ -3,7 +3,7 @@
      nhau: tat multicast, liet ke IP Tailscale cua MOI may (ca chinh minh - de ros2 CLI
      tren cung may van thay node). DUNG CHUNG file nay tren drone va tram mat dat:
        export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-       export CYCLONEDDS_URI=file://$HOME/pi5/cyclonedds_tailscale.xml
+       export CYCLONEDDS_URI=file://$HOME/jetson/cyclonedds_tailscale.xml
      Them may moi: them mot dong <Peer>, IP lay tu `tailscale status`. -->
 <CycloneDDS xmlns="https://cdds.io/config">
   <Domain Id="any">
