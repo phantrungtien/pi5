@@ -24,13 +24,19 @@ khi Gemini khong tra loi kip / mat mang. Vet dang hoi hay bi bac khong hien (_Fi
     python3 fire_verify.py KEY a.jpg ...    # hoi Gemini that tung anh
 """
 import base64, json, queue, sys, threading, time
+import concurrent.futures as cf
 
 import cv2
 import requests
 
 from fire_tracker import iou
 
-MODEL = "gemini-3.1-flash-lite"
+# Hoi CA HAI cung luc, lay cau tra loi ve truoc: Gemini cham theo dot (24/10 14:10 3.1-flash-lite 5-8 s, cung luc
+# 3.5-flash-lite p50 1.4 s / max 1.7 s), hai model hiem khi cham cung nhau. Ca hai deu 48/48 tren ~/fire_bench.
+MODELS = ("gemini-3.1-flash-lite", "gemini-3.5-flash-lite")
+HEDGE = 0.0     # ponytail: model thu hai goi sau HEDGE s. 0 = cung luc (x2 credit, ~$4-5/ngay dung yen o lab);
+                # 2.0 = chi goi khi model dau cham (~x1.3 credit), van cat duoc dot cham 5-8 s
+WORKERS = 3     # vet khac nhau hoi song song: anh lua khong xep hang sau bao nham trong lab
 PROMPT = ("This image is a crop around a region that the onboard fire detector of a firefighting drone flagged "
           "as fire. Is there real fire (visible flames) in it? Smoke alone, sunlight, lamps, reflections and "
           "orange/red objects are NOT fire.")
@@ -38,8 +44,8 @@ SCHEMA = {"type": "OBJECT", "properties": {"fire": {"type": "BOOLEAN"}}, "requir
 HOLD = 4.0      # ponytail: cho Gemini toi da 4 s (p90 2 s qua Wi-Fi lab). Bay bang 4G thi do lai.
 DOWN = 10.0     # loi mang/API -> bo qua Gemini 10 s roi thu lai
 RECHECK = 15.0  # vet bi bac 2 lan lien -> hoi lai sau 15 s: lua that bi bac nham khong bi giu mai
-RECHECK1 = 3.0  # bi bac LAN DAU -> hoi lai sau 3 s voi khung khac. 24/10 15:32: anh lua nghieng + nhoe luc
-                # vua gio len bi bac, cac vet sau thua ke -> lua bi an 19 s. Bao nham ton them 1 lan goi.
+RECHECK1 = 1.0  # bi bac LAN DAU -> hoi lai sau 1 s voi khung khac. 24/10 15:32 va 15:52: anh lua luc vua gio
+                # len (nghieng, nhoe) deu bi bac, lan hai dung. Hoi song song nen hoi lai som khong nghen ai.
 SIDE = 384      # canh dai anh gui; anh cat ~1180 token/lan
 
 
@@ -69,8 +75,8 @@ def _di(s, now):
 
 
 class FireVerify:
-    def __init__(self, key, model=MODEL):
-        self.model, self.sa, self.api_key = model, None, None
+    def __init__(self, key, models=MODELS):
+        self.models, self.sa, self.api_key = models, None, None
         if key is not None:  # doc khoa NGAY: sai duong dan thi keu luc khoi dong, khong phai luc dang bay
             if key.endswith(".json"):
                 self.sa = json.load(open(key))
@@ -81,8 +87,10 @@ class FireVerify:
         self.down = 0.0  # truoc moc nay (monotonic) coi nhu mat mang
         self.q = queue.Queue()
         self._tok, self._exp, self._prune = None, 0.0, 0.0
-        threading.Thread(target=self._worker, daemon=True).start()
-        print(f"[ai] Gemini {model} xac nhan vet lua (giu toi {HOLD:g} s)", flush=True)
+        self.pool = cf.ThreadPoolExecutor(max_workers=WORKERS * len(models))
+        for _ in range(WORKERS):
+            threading.Thread(target=self._worker, daemon=True).start()
+        print(f"[ai] Gemini {' + '.join(models)} song song xac nhan vet lua (giu toi {HOLD:g} s)", flush=True)
 
     def filter(self, img, tracks, now=None):
         """Vet da xac nhan cua YOLO -> vet duoc phep ra ROS. Goi moi khung tu luong lua."""
@@ -132,18 +140,34 @@ class FireVerify:
             s, jpg = self.q.get()
             t0 = time.monotonic()
             try:
-                fire = self.ask(jpg.tobytes())
+                fire, m = self.ask(jpg.tobytes())
                 s[4] = 0 if fire else s[4] + 1
                 s[1], s[0] = time.monotonic(), ("ok" if fire else "khong")
-                print(f"[ai] hop {s[2]}: {'LUA' if fire else 'khong phai lua'} ({time.monotonic() - t0:.1f} s)",
-                      flush=True)
+                print(f"[ai] hop {s[2]}: {'LUA' if fire else 'khong phai lua'} ({time.monotonic() - t0:.1f} s, "
+                      f"{m.replace('gemini-', '')})", flush=True)
             except Exception as e:  # noqa: BLE001 - mang/API/JSON la: chi YOLO, khong giet luong
                 self.down = time.monotonic() + DOWN
                 s[1], s[0] = time.monotonic(), "yolo"
                 print(f"[ai] loi {type(e).__name__}: {str(e)[:120]} -> chi YOLO {DOWN:g} s", flush=True)
 
     def ask(self, jpg):
-        """JPEG bytes -> True neu Gemini thay lua that."""
+        """JPEG bytes -> (co lua that?, model tra loi). Goi cac model song song (model sau cach HEDGE s), lay
+        cau tra loi DAU TIEN thanh cong; model loi thi cho model kia, tat ca loi moi nem loi (-> chi YOLO)."""
+        futs, err = {}, None
+        for i, m in enumerate(self.models):
+            futs[self.pool.submit(self._ask1, m, jpg)] = m
+            if HEDGE > 0 and i + 1 < len(self.models):
+                for f in cf.wait(futs, timeout=HEDGE, return_when=cf.FIRST_COMPLETED)[0]:
+                    if f.exception() is None:
+                        return f.result(), futs[f]
+        for f in cf.as_completed(futs):  # model cham hon van chay tiep o nen, ket qua bo
+            if f.exception() is None:
+                return f.result(), futs[f]
+            err = f.exception()
+        raise err
+
+    def _ask1(self, model, jpg):
+        """Mot lan goi mot model -> True neu thay lua that."""
         gc = {"responseMimeType": "application/json", "responseSchema": SCHEMA, "maxOutputTokens": 256,
               "thinkingConfig": {"thinkingLevel": "MINIMAL"}}
         body = {"contents": [{"role": "user", "parts": [
@@ -151,10 +175,10 @@ class FireVerify:
             "generationConfig": gc}
         if self.sa:
             url = (f"https://aiplatform.googleapis.com/v1/projects/{self.sa['project_id']}/locations/global/"
-                   f"publishers/google/models/{self.model}:generateContent")
+                   f"publishers/google/models/{model}:generateContent")
             h = {"Authorization": f"Bearer {self._token()}"}
         else:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
             h = {"x-goog-api-key": self.api_key}
         r = requests.post(url, headers=h, json=body, timeout=(3, 8))
         r.raise_for_status()
@@ -188,7 +212,7 @@ def _selfcheck():
         a = answers.pop("next")
         if isinstance(a, Exception):
             raise a
-        return a
+        return a, "gia"
 
     def wait(s, want):
         for _ in range(200):
@@ -253,6 +277,24 @@ def _selfcheck():
     d = Track(5, (300, 600, 340, 640), 0, 0.4)
     n = len(asked)
     assert fv.filter(img, [d]) == [d] and len(asked) == n, "trong DOWN: di ngay, khong hoi"
+
+    hai = FireVerify(None, models=("cham", "nhanh"))  # goi song song: lay cau tra loi ve truoc
+    hai._ask1 = lambda m, jpg: (time.sleep(0.4), False)[1] if m == "cham" else True
+    t0 = time.monotonic()
+    assert hai.ask(b"") == (True, "nhanh") and time.monotonic() - t0 < 0.3, "khong cho model cham"
+
+    def nhanh_loi(m, jpg):
+        if m == "nhanh":
+            raise requests.ConnectionError("x")
+        return False
+    hai._ask1 = nhanh_loi
+    assert hai.ask(b"") == (False, "cham"), "model loi -> lay model kia"
+    hai._ask1 = lambda m, jpg: (_ for _ in ()).throw(requests.ConnectionError(m))
+    try:
+        hai.ask(b"")
+        raise AssertionError("ca hai loi phai nem loi")
+    except requests.ConnectionError:
+        pass
     print("OK")
 
 
@@ -264,5 +306,5 @@ if __name__ == "__main__":
         for f in sys.argv[2:]:
             im = cv2.imread(f)
             t0 = time.monotonic()
-            ok = fv.ask(cv2.imencode(".jpg", crop(im, (0, 0, im.shape[1], im.shape[0])))[1].tobytes())
-            print(f"{f}: {'LUA' if ok else 'khong'} ({time.monotonic() - t0:.2f} s)")
+            ok, m = fv.ask(cv2.imencode(".jpg", crop(im, (0, 0, im.shape[1], im.shape[0])))[1].tobytes())
+            print(f"{f}: {'LUA' if ok else 'khong'} ({time.monotonic() - t0:.2f} s, {m})")
