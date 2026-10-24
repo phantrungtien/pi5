@@ -53,10 +53,15 @@ ExecStart=/bin/bash -c "source /opt/ros/humble/setup.bash; source /home/robomang
       --model yolo11n-pose-960x544-raw.onnx --conf 0.3 --threads 3 \
       --h264 100.96.37.111:5600,100.82.93.76:5600 --h264-kbps 1500 --h264-fb-port 5601 --h264-kbps-min 1000 --hl-ae 100 --gamma 1.2 --no-mjpeg --stamp \
       --fire-model /home/robomango/phantrungtien-fire-detection/models/best_nano_111_640.onnx \
-      --fire-conf 0.35 --fire-threads 1 --fire-hz 5 --fire-save /home/robomango/fire_dataset"
+      --fire-conf 0.35 --fire-threads 1 --fire-hz 5 --fire-save /home/robomango/fire_dataset \
+      --fire-verify /home/robomango/jetson/hidden-lyceum-473116-p8-1f580efa4c6d.json"
 # 23/10/2026 --fire-save: khung co hop lua + nhan YOLO -> ~/fire_dataset/<ngay>/ (<= 1 khung/s,
 # toi da 5 GB moi lan chay, dung khi dia con < 10 GB) de gom anh bao nham (thanh an toan vang
 # cua robot bi bao Fire 18/19 khung) ma train lai. Bo co nay = tat luu.
+# 24/10/2026 --fire-verify: Gemini 3.1 Flash-Lite (Vertex) xac nhan vet lua truoc khi ra
+# /fire/detections, giu vet toi 4 s cho Gemini; mat mang = chi YOLO (xem fire_verify.py). Khoa
+# service account KHONG nam trong git - scp len roi chmod 600. Credit trial het 22/01/2027.
+# Bo co nay = chi YOLO nhu cu.
 # So nguoi ra ROS 2 /vision/person_count (std_msgs/Int32) qua Tailscale - xem
 # cyclonedds_tailscale.xml. Tram mat dat phai dat CUNG hai bien nay moi thay topic.
 Environment=RMW_IMPLEMENTATION=rmw_cyclonedds_cpp

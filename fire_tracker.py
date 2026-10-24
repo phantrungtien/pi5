@@ -308,6 +308,7 @@ class FireTracker:
         self.hud_label = "NGUOI" if classes and set(classes) == {"person"} else "LUA"
         self.tracker = Tracker(confirm_hits=confirm_hits, max_miss=max_miss)
         self.tracks = []  # vet da xac nhan cua lan suy dien GAN NHAT
+        self.tag = None   # Track -> chu them sau nhan (None = khong ve), vd fire_verify.FireVerify.tag
         self.ms = 0.0  # thoi gian suy dien khung cuoi, de hien len HUD
 
     def _names(self):
@@ -365,12 +366,16 @@ class FireTracker:
         ~67 ms: goi `draw()` tung khung la keo ca luong video xuong 2,4 fps.
         Luong YOLO chay rieng, con day chi ve lai cai no vua tim duoc.
         """
+        tag = getattr(self, "tag", None)  # getattr: demo() goi ham nay tren lop gia khong co .tag
         for t in self.tracks:
+            extra = tag(t) if tag else ""
+            if extra is None:  # vd fire_verify: Gemini chua xac nhan / da bac -> khong ve
+                continue
             name = self.names.get(t.cls, f"lop{t.cls}")
             color = COLORS.get(name, COLOR_OTHER)
             x1, y1, x2, y2 = t.box
             cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
-            _nhan(img, f"#{t.id} {name} {t.score:.2f}", x1, y1, color)
+            _nhan(img, f"#{t.id} {name} {t.score:.2f}{extra}", x1, y1, color)
         if hud is not None:
             # run_gui dua ca dong ("NGUOI 3 | 30 FPS"): ms/FPS cua model LUA o day
             # bi doc nham la fps video. Toc do lua van in trong log ("yolo NN ms").
@@ -459,7 +464,7 @@ def demo(model=None):
     # luong doc camera va video dung han — da xay ra that. Goi duoc no ma khong
     # can .onnx bang cach muon ham cho mot vat gia du thuoc tinh.
     class _Gia:
-        names, ms = {0: "Fire"}, 12.3
+        names, ms, hud_label = {0: "Fire"}, 12.3, "LUA"
         tracks = [Track(1, (10, 10, 50, 50), 0, 0.9)]
     _Gia.draw_cached = FireTracker.draw_cached
     anh = np.zeros((120, 160, 3), np.uint8)

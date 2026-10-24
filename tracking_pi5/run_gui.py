@@ -79,6 +79,7 @@ def _seg_report():
 _fire_slot = None  # (khung, meta) cho _fire_loop: meta (gio chup, vung cat) di CUNG khung
 _fire_ros = None   # _FireRos khi co ROS
 _fire_saver = None  # _FireSaver khi --fire-save
+_fire_verify = None  # fire_verify.FireVerify khi --fire-verify: Gemini loc vet truoc khi ra ROS
 
 
 class _FireSaver:
@@ -163,7 +164,9 @@ def _fire_loop(tracker):
             time.sleep(1.0)
             continue
         if _fire_saver is not None:
-            _fire_saver(img, tracks, meta)
+            _fire_saver(img, tracks, meta)  # ca hop Gemini bac: chinh la anh bao nham can de train lai
+        if _fire_verify is not None:
+            tracks = _fire_verify.filter(img, tracks)
         if meta is not None and _fire_ros is not None:
             _fire_ros.publish_fire(tracks, meta, img.shape, tracker.names)
 
@@ -894,6 +897,9 @@ def main():
                    help="gioi han nhip suy dien fire; 0 = nhanh nhat co the")
     p.add_argument("--fire-save", default=None, metavar="DIR",
                    help="luu khung co hop lua + nhan YOLO vao DIR de train lai (xem _FireSaver)")
+    p.add_argument("--fire-verify", default=None, metavar="KEY",
+                   help="Gemini xac nhan vet lua truoc khi ra /fire/detections: khoa service account "
+                        ".json (Vertex) - xem fire_verify.py")
     a = p.parse_args()
 
     import person_follow_reid as pf
@@ -906,7 +912,7 @@ def main():
         pf.HFOV_DEG = float(np.degrees(2 * np.arctan(np.tan(np.radians(pf.HFOV_DEG) / 2) / a.zoom)))
         print(f"[follow] zoom {a.zoom:g} -> HFOV {pf.HFOV_DEG:.1f} deg", flush=True)
 
-    global _fire_tracker, _fire_period, _fire_ros, _fire_saver
+    global _fire_tracker, _fire_period, _fire_ros, _fire_saver, _fire_verify
     if a.fire_model:
         from fire_tracker import FireTracker
 
@@ -916,6 +922,13 @@ def main():
                                     confirm_hits=1, max_miss=2)
         if a.fire_save:
             _fire_saver = _FireSaver(a.fire_save, a.cam_width or a.width, _fire_tracker.names)
+        if a.fire_verify:
+            try:  # khoa hong/thieu: chi YOLO, van stream - drone khong duoc mu vi Gemini
+                from fire_verify import FireVerify
+                _fire_verify = FireVerify(a.fire_verify)
+                _fire_tracker.tag = _fire_verify.tag
+            except Exception as e:  # noqa: BLE001
+                print(f"[ai] tat Gemini ({type(e).__name__}: {e}) -> chi YOLO", flush=True)
         # KHONG gan mj._tracker: lua van ve hop len video, nhung /status + ROS chi bao nguoi.
         threading.Thread(target=_fire_loop, args=(_fire_tracker,), daemon=True).start()
         lop = ([_fire_tracker.names[i] for i in sorted(_fire_tracker.keep_cls)]
