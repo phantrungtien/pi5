@@ -15,7 +15,7 @@ filter() quyet vet nao di tiep ra /fire/detections (fire_locator -> /fire/target
     dang hoi, qua HOLD         -> di (chi YOLO): Gemini cham/treo khong duoc bit mat drone
     mat mang / loi API         -> di ngay (chi YOLO) trong DOWN s, khong cho HOLD
 
-YOLO chop tat / vat di chuyen thi doi so hieu vet: vet moi o gan vet vua thay (< 3 s, xem _gan) dung CHUNG
+YOLO chop tat / vat di chuyen thi doi so hieu vet: vet moi o gan vet thay trong RECHECK s (xem _gan) dung CHUNG
 o trang thai, khong hoi lai, khong giu lai lan nua. O di theo hop moi nhat cua vet. Video CHI ve vet duoc di (cung luat voi ROS): nhan AI:OK, hoac YOLO
 khi Gemini khong tra loi kip / mat mang. Vet dang hoi hay bi bac khong hien (_FireSaver van luu ca hai).
 
@@ -107,9 +107,10 @@ class FireVerify:
         """o [ket qua, gio hoi/tra loi, hop MOI NHAT, lan cuoi thay] cua vet t; vet moi thi hoi Gemini."""
         s = self.v.get(t.id)
         if s is None:
-            # YOLO mat dau roi bat lai (vat dang di chuyen) -> so hieu moi: dung chung o cua vet vua thay
-            # (< 3 s) o gan do. 24/10: o dung yen o cho hoi -> dien thoai cam tay bi hoi lai 9 lan lien.
-            s = next((o for o in self.v.values() if now - o[3] < 3 and _gan(o[2], t.box)), None)
+            # YOLO mat dau roi bat lai (vat dang di chuyen) -> so hieu moi: dung chung o cua vet thay trong
+            # RECHECK s o gan do. 24/10: o dung yen o cho hoi -> dien thoai cam tay bi hoi lai 9 lan lien;
+            # cua so 3 s thi bao nham chop tat (thay 1 khung, mat vai giay) bi hoi lai moi lan hien.
+            s = next((o for o in self.v.values() if now - o[3] < RECHECK and _gan(o[2], t.box)), None)
             if s is None:
                 s = [None, now, t.box, now]
             self.v[t.id] = s
