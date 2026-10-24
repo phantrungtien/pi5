@@ -15,6 +15,8 @@ filter() quyet vet nao di tiep ra /fire/detections (fire_locator -> /fire/target
                                   thi bao nham da keo drone di truoc khi Gemini kip tra loi
     dang hoi, qua HOLD         -> di (chi YOLO): Gemini cham/treo khong duoc bit mat drone
     mat mang / loi API         -> di ngay (chi YOLO) trong DOWN s, khong cho HOLD
+    hai dong chi YOLO tren chi di khi diem >= YOLO_ONLY: --fire-conf thap (0.2) la de Gemini thay nhieu
+    hon, khong co Gemini thi giu nguong cu
 
 YOLO chop tat / vat di chuyen thi doi so hieu vet: vet moi o gan vet thay trong RECHECK s (xem _gan) dung CHUNG
 o trang thai, khong hoi lai, khong giu lai lan nua. O di theo hop moi nhat cua vet. Video CHI ve vet duoc di (cung luat voi ROS): nhan AI:OK, hoac YOLO
@@ -46,6 +48,8 @@ DOWN = 10.0     # loi mang/API -> bo qua Gemini 10 s roi thu lai
 RECHECK = 15.0  # vet bi bac 2 lan lien -> hoi lai sau 15 s: lua that bi bac nham khong bi giu mai
 RECHECK1 = 1.0  # bi bac LAN DAU -> hoi lai sau 1 s voi khung khac. 24/10 15:32 va 15:52: anh lua luc vua gio
                 # len (nghieng, nhoe) deu bi bac, lan hai dung. Hoi song song nen hoi lai som khong nghen ai.
+YOLO_ONLY = 0.35  # chi YOLO (mat mang/Gemini cham) thi doi diem nhu truoc khi co Gemini. 24/10 18:12 ha
+                  # --fire-conf 0.35 -> 0.2: anh dien thoai 6 hinh lua YOLO cho 0.37/0.21/0.13, chi qua 1
 SIDE = 384      # canh dai anh gui; anh cat ~1180 token/lan
 
 
@@ -68,10 +72,12 @@ def _gan(a, b):
     return abs(a[0] + a[2] - b[0] - b[2]) / 2 <= s and abs(a[1] + a[3] - b[1] - b[3]) / 2 <= s
 
 
-def _di(s, now):
-    """O trang thai -> vet duoc di ra ROS va hien len video. Mot luat cho ca hai: thay gi tren video la
+def _di(s, t, now):
+    """O trang thai + vet -> vet duoc di ra ROS va hien len video. Mot luat cho ca hai: thay gi tren video la
     drone dang nham toi do."""
-    return s[0] in ("ok", "yolo") or (s[0] == "?" and now - s[1] >= HOLD)
+    if s[0] == "ok":
+        return True
+    return t.score >= YOLO_ONLY and (s[0] == "yolo" or (s[0] == "?" and now - s[1] >= HOLD))
 
 
 class FireVerify:
@@ -98,7 +104,7 @@ class FireVerify:
         out = []
         for t in tracks:
             self.seen[t.id] = now
-            if _di(self._state(img, t, now), now):
+            if _di(self._state(img, t, now), t, now):
                 out.append(t)
         if now - self._prune > 10:
             self._prune = now
@@ -110,7 +116,7 @@ class FireVerify:
         """Nhan them sau ten lop tren video (FireTracker.draw_cached); None = khong ve vet nay."""
         s = self.v.get(t.id)
         now = time.monotonic() if now is None else now
-        if s is None or not _di(s, now):
+        if s is None or not _di(s, t, now):
             return None
         return " AI:OK" if s[0] == "ok" else " YOLO"
 
@@ -233,9 +239,12 @@ def _selfcheck():
     assert fv.tag(a) is None, "dang hoi -> khong hien len video"
     assert fv.filter(img, [a], now=time.monotonic() + HOLD) == [a], "qua HOLD -> chi YOLO"
     assert fv.tag(a, now=time.monotonic() + HOLD) == " YOLO"
+    a.score = 0.25
+    assert fv.filter(img, [a], now=time.monotonic() + HOLD) == [], "chi YOLO ma diem < YOLO_ONLY -> giu"
     gate.set()
     wait(fv.v[1], "ok")
-    assert fv.filter(img, [a]) == [a] and fv.tag(a) == " AI:OK"
+    assert fv.filter(img, [a]) == [a] and fv.tag(a) == " AI:OK", "Gemini xac nhan -> diem thap van di"
+    a.score = 0.6
 
     a2 = Track(2, (104, 102, 162, 158), 0, 0.5)  # YOLO chop tat, doi so hieu, cung cho
     assert fv.filter(img, [a2]) == [a2] and len(asked) == 1, "thua ke, khong hoi lai"
