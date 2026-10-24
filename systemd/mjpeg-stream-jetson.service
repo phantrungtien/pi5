@@ -26,8 +26,12 @@ Wants=tailscaled.service
 # 960x544-raw = export KHONG NMS -> chay TensorRT FP16 (track.Detector tu NMS bang cv2):
 # 18 ms vs 640x384 CUDA ~25-40 ms, bat xa hon (9 khung gia lap xa x3: 12 vs 8 nguoi).
 # Engine cache o tracking_pi5/trt_cache (build lan dau ~14 phut, sau doc ~8 s).
-# Pose chu khong detect: da thu yolo11n-640x384 (detect) 11/10/2026 - tren anh tinh
-# dem nhieu hon, nhung chay that nguoi dung thay fps thap va bat te hon. Giu pose.
+# 11/10/2026 thu yolo11n-640x384 (detect) thay pose: fps thap, bat te hon -> giu pose. Ban do
+# co NMS trong graph nen chi chay CUDA. 24/10/2026 doi sang DETECT theo y nguoi dung (bo khung
+# xuong): yolo11n-960x544-raw.onnx = yolo11n.pt export imgsz=(544,960) nms=False opset=12 ->
+# TRT FP16 21 ms (do khi service cu van chay), cung kich thuoc pose cu. Detect khong co bo loc
+# "< 4 khop ro" (hop chi om canh tay nguoi ngoi sat camera) nen co the dem du; quay lai pose
+# = doi --model ve yolo11n-pose-960x544-raw.onnx.
 # Model 640x384 (chu nhat 16:9) chu khong 416 vuong: 416 phi 1/3 diem anh vao vien
 # xam. Cung ~25 ms, giu nguyen goc nhin rong, nguoi xa gap doi bat 2/3 thay vi 1/3.
 # Xa hon nua: yolo11n-pose-960x544.onnx (3/3, 40 ms). --zoom N cat giua: xa hon nhung
@@ -50,7 +54,7 @@ ExecStartPre=+/bin/sh -c 'G=/sys/class/devfreq/17000000.gpu; cat $G/max_freq > $
 ExecStart=/bin/bash -c "source /opt/ros/humble/setup.bash; source /home/robomango/Firefighting-drone/install/setup.bash; cd /home/robomango/jetson/tracking_pi5; \
     exec python3 -u run_gui.py --detect-only --device auto \
       --width 1280 --height 720 --cam-width 3840 --cam-height 2160 --fps 30 --quality 80 --stream-every 1 \
-      --model yolo11n-pose-960x544-raw.onnx --conf 0.3 --threads 3 \
+      --model yolo11n-960x544-raw.onnx --conf 0.3 --threads 3 \
       --h264 100.96.37.111:5600,100.82.93.76:5600 --h264-kbps 1500 --h264-fb-port 5601 --h264-kbps-min 1000 --hl-ae 100 --gamma 1.2 --no-mjpeg --stamp \
       --fire-model /home/robomango/phantrungtien-fire-detection/models/best_nano_111_640.onnx \
       --fire-conf 0.35 --fire-threads 1 --fire-hz 5 --fire-save /home/robomango/fire_dataset \
