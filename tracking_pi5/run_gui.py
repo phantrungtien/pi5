@@ -1079,7 +1079,7 @@ def main():
         # Loi o vong chinh ma de Python thoat binh thuong thi treo o "terminate called
         # without an active exception" (luong onnxruntime/rclpy chua dung): tien trinh
         # con song, systemd khong restart, GUI mat hinh mai. Thoat CUNG de systemd lo.
-        import os, traceback
+        import traceback  # os da import o dau file: import lai o day lam os thanh bien cuc bo cua main
         traceback.print_exc()
         sys.stdout.flush()
         os._exit(1)
