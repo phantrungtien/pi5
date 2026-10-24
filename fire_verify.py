@@ -168,8 +168,10 @@ class FireVerify:
 
     def _ask1(self, model, jpg):
         """Mot lan goi mot model -> True neu thay lua that."""
+        # temperature 0: cung anh cung dap an (24/10/2026 mac dinh 1.0 tra T,F,F cho cung mot khung).
+        # Google khuyen giu 1.0 cho Gemini 3 (so lap/giam chat luong) - dau ra chi 1 bool nen thu 0.
         gc = {"responseMimeType": "application/json", "responseSchema": SCHEMA, "maxOutputTokens": 256,
-              "thinkingConfig": {"thinkingLevel": "MINIMAL"}}
+              "temperature": 0, "thinkingConfig": {"thinkingLevel": "MINIMAL"}}
         body = {"contents": [{"role": "user", "parts": [
             {"inlineData": {"mimeType": "image/jpeg", "data": base64.b64encode(jpg).decode()}}, {"text": PROMPT}]}],
             "generationConfig": gc}
