@@ -9,7 +9,8 @@ Vet MOI -> cat anh quanh hop -> luong rieng hoi Gemini "co lua that khong". Do 2
 filter() quyet vet nao di tiep ra /fire/detections (fire_locator -> /fire/target -> drone bay toi):
 
     Gemini noi CO lua          -> di
-    Gemini noi KHONG           -> giu (thanh an toan vang cua robot, den, hoang hon...); hoi lai sau RECHECK
+    Gemini noi KHONG           -> giu (thanh an toan vang cua robot, den, hoang hon...); hoi lai sau
+                                  RECHECK1 (lan dau) hoac RECHECK (bi bac 2 lan lien)
     dang hoi, chua qua HOLD    -> giu: fire_locator chi can 5 khung (1 s) la phat /fire/target - cho qua
                                   thi bao nham da keo drone di truoc khi Gemini kip tra loi
     dang hoi, qua HOLD         -> di (chi YOLO): Gemini cham/treo khong duoc bit mat drone
@@ -36,7 +37,9 @@ PROMPT = ("This image is a crop around a region that the onboard fire detector o
 SCHEMA = {"type": "OBJECT", "properties": {"fire": {"type": "BOOLEAN"}}, "required": ["fire"]}
 HOLD = 4.0      # ponytail: cho Gemini toi da 4 s (p90 2 s qua Wi-Fi lab). Bay bang 4G thi do lai.
 DOWN = 10.0     # loi mang/API -> bo qua Gemini 10 s roi thu lai
-RECHECK = 15.0  # vet bi bac -> hoi lai sau 15 s: lua that bi bac nham khong bi giu mai
+RECHECK = 15.0  # vet bi bac 2 lan lien -> hoi lai sau 15 s: lua that bi bac nham khong bi giu mai
+RECHECK1 = 3.0  # bi bac LAN DAU -> hoi lai sau 3 s voi khung khac. 24/10 15:32: anh lua nghieng + nhoe luc
+                # vua gio len bi bac, cac vet sau thua ke -> lua bi an 19 s. Bao nham ton them 1 lan goi.
 SIDE = 384      # canh dai anh gui; anh cat ~1180 token/lan
 
 
@@ -112,10 +115,10 @@ class FireVerify:
             # cua so 3 s thi bao nham chop tat (thay 1 khung, mat vai giay) bi hoi lai moi lan hien.
             s = next((o for o in self.v.values() if now - o[3] < RECHECK and _gan(o[2], t.box)), None)
             if s is None:
-                s = [None, now, t.box, now]
+                s = [None, now, t.box, now, 0]  # o[4]: so lan "khong" lien tiep
             self.v[t.id] = s
         s[2], s[3] = t.box, now  # o di theo vet
-        if (s[0] is None or (s[0] == "khong" and now - s[1] > RECHECK)
+        if (s[0] is None or (s[0] == "khong" and now - s[1] > (RECHECK if s[4] >= 2 else RECHECK1))
                 or (s[0] == "yolo" and now >= self.down)):
             if now < self.down:
                 s[1], s[0] = now, "yolo"
@@ -130,6 +133,7 @@ class FireVerify:
             t0 = time.monotonic()
             try:
                 fire = self.ask(jpg.tobytes())
+                s[4] = 0 if fire else s[4] + 1
                 s[1], s[0] = time.monotonic(), ("ok" if fire else "khong")
                 print(f"[ai] hop {s[2]}: {'LUA' if fire else 'khong phai lua'} ({time.monotonic() - t0:.1f} s)",
                       flush=True)
@@ -229,6 +233,17 @@ def _selfcheck():
     ve = np.zeros_like(img)
     FireTracker.draw_cached(_Gia(), ve, hud="")
     assert ve[100:160, 100].any() and not ve[400:460, 900].any(), "vet bi bac khong duoc ve"
+
+    n = len(asked)  # bac lan dau: sau RECHECK1 hoi lai; bac 2 lan lien: im toi RECHECK
+    answers["next"] = False
+    assert fv.filter(img, [b], now=time.monotonic() + RECHECK1 + 0.5) == [], "dang hoi lai -> van giu"
+    for _ in range(200):
+        if fv.v[3][4] == 2:
+            break
+        time.sleep(0.01)
+    assert len(asked) == n + 1 and fv.v[3][0] == "khong" and fv.v[3][4] == 2
+    fv.filter(img, [b], now=time.monotonic() + RECHECK1 + 0.5)
+    assert len(asked) == n + 1, "bac 2 lan lien -> khong hoi lai truoc RECHECK"
 
     c = Track(4, (500, 500, 540, 540), 0, 0.4)  # mat mang
     answers["next"] = requests.ConnectionError("no route")
