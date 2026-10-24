@@ -15,8 +15,8 @@ filter() quyet vet nao di tiep ra /fire/detections (fire_locator -> /fire/target
     dang hoi, qua HOLD         -> di (chi YOLO): Gemini cham/treo khong duoc bit mat drone
     mat mang / loi API         -> di ngay (chi YOLO) trong DOWN s, khong cho HOLD
 
-YOLO chop tat thi doi so hieu vet: vet moi trung cho (IoU >= 0.3) vet dang co dung CHUNG o trang thai,
-khong hoi lai, khong giu lai lan nua. Video CHI ve vet duoc di (cung luat voi ROS): nhan AI:OK, hoac YOLO
+YOLO chop tat / vat di chuyen thi doi so hieu vet: vet moi o gan vet vua thay (< 3 s, xem _gan) dung CHUNG
+o trang thai, khong hoi lai, khong giu lai lan nua. O di theo hop moi nhat cua vet. Video CHI ve vet duoc di (cung luat voi ROS): nhan AI:OK, hoac YOLO
 khi Gemini khong tra loi kip / mat mang. Vet dang hoi hay bi bac khong hien (_FireSaver van luu ca hai).
 
     python3 fire_verify.py                  # tu kiem logic, khong goi mang
@@ -49,6 +49,14 @@ def crop(img, box):
     c = img[int(max(0, cy - s / 2)):int(min(h, cy + s / 2)), int(max(0, cx - s / 2)):int(min(w, cx + s / 2))]
     k = SIDE / max(c.shape[:2])
     return cv2.resize(c, None, fx=k, fy=k, interpolation=cv2.INTER_AREA) if k < 1 else c
+
+
+def _gan(a, b):
+    """Hop b co phai cung vat voi hop a (vua thay): chong nhau, hoac tam b cach tam a <= canh dai cua a."""
+    if iou(a, b) >= 0.3:
+        return True
+    s = max(a[2] - a[0], a[3] - a[1])
+    return abs(a[0] + a[2] - b[0] - b[2]) / 2 <= s and abs(a[1] + a[3] - b[1] - b[3]) / 2 <= s
 
 
 def _di(s, now):
@@ -96,18 +104,22 @@ class FireVerify:
         return " AI:OK" if s[0] == "ok" else " YOLO"
 
     def _state(self, img, t, now):
+        """o [ket qua, gio hoi/tra loi, hop MOI NHAT, lan cuoi thay] cua vet t; vet moi thi hoi Gemini."""
         s = self.v.get(t.id)
         if s is None:
-            s = next((o for o in self.v.values() if iou(o[2], t.box) >= 0.3), None)
+            # YOLO mat dau roi bat lai (vat dang di chuyen) -> so hieu moi: dung chung o cua vet vua thay
+            # (< 3 s) o gan do. 24/10: o dung yen o cho hoi -> dien thoai cam tay bi hoi lai 9 lan lien.
+            s = next((o for o in self.v.values() if now - o[3] < 3 and _gan(o[2], t.box)), None)
             if s is None:
-                s = [None, now, t.box]
+                s = [None, now, t.box, now]
             self.v[t.id] = s
+        s[2], s[3] = t.box, now  # o di theo vet
         if (s[0] is None or (s[0] == "khong" and now - s[1] > RECHECK)
                 or (s[0] == "yolo" and now >= self.down)):
             if now < self.down:
                 s[1], s[0] = now, "yolo"
             else:
-                s[1], s[2], s[0] = now, t.box, "?"
+                s[1], s[0] = now, "?"
                 self.q.put((s, cv2.imencode(".jpg", crop(img, t.box), [cv2.IMWRITE_JPEG_QUALITY, 90])[1]))
         return s
 
@@ -196,6 +208,10 @@ def _selfcheck():
 
     a2 = Track(2, (104, 102, 162, 158), 0, 0.5)  # YOLO chop tat, doi so hieu, cung cho
     assert fv.filter(img, [a2]) == [a2] and len(asked) == 1, "thua ke, khong hoi lai"
+    a2.box = (180, 100, 240, 160)  # cam tay di chuyen, cung so hieu: o di theo
+    fv.filter(img, [a2])
+    a3 = Track(6, (225, 100, 285, 160), 0, 0.5)  # mat dau roi bat lai lech 45 px, IoU 0.14
+    assert fv.filter(img, [a3]) == [a3] and len(asked) == 1, "vet moi canh vet vua thay -> thua ke"
 
     gate.clear()
     b = Track(3, (900, 400, 960, 460), 0, 0.55)  # thanh vang
