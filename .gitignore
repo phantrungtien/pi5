@@ -18,3 +18,7 @@ __pycache__/
 frame.jpg
 khung/
 fire-venv/
+tracking_pi5/trt_cache/
+calib/*.jpg
+calib/bo/
+tracking_pi5/run_gui.py.truoc-*

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ROS 2 qua Tailscale. Tailscale KHONG chuyen multicast, nen DDS khong tu tim thay
+     nhau: tat multicast, liet ke IP Tailscale cua MOI may (ca chinh minh - de ros2 CLI
+     tren cung may van thay node). DUNG CHUNG file nay tren drone va tram mat dat:
+       export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+       export CYCLONEDDS_URI=file://$HOME/pi5/cyclonedds_tailscale.xml
+     Them may moi: them mot dong <Peer>, IP lay tu `tailscale status`. -->
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain Id="any">
+    <General>
+      <Interfaces><NetworkInterface name="tailscale0"/></Interfaces>
+      <AllowMulticast>false</AllowMulticast>
+      <!-- tailscale0 MTU 1280: goi to hon bi phan manh IP, mat 1 manh la mat ca goi -->
+      <MaxMessageSize>1200B</MaxMessageSize>
+    </General>
+    <Discovery>
+      <ParticipantIndex>auto</ParticipantIndex>
+      <MaxAutoParticipantIndex>30</MaxAutoParticipantIndex>
+      <Peers>
+        <Peer Address="100.117.32.3"/>  <!-- trungtien-drone (Jetson) -->
+        <Peer Address="100.82.93.76"/>  <!-- phan-nitro-an515-58 (tram mat dat) -->
+      </Peers>
+    </Discovery>
+  </Domain>
+</CycloneDDS>

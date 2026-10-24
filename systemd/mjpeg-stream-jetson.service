@@ -1,0 +1,70 @@
+# /etc/systemd/system/mjpeg-stream.service  (ban Jetson Orin Nano)
+[Unit]
+Description=MJPEG camera stream + bam nguoi (cong 8080) - Jetson
+After=network.target tailscaled.service
+Wants=tailscaled.service
+
+[Service]
+# Khac ban Pi: chay thang tren may, KHONG docker. Jetson da co san ROS Humble,
+# gstreamer, onnxruntime-gpu (YOLO tren CUDA 11 ms/khung, Pi 167 ms).
+# Lua can ~/phantrungtien-fire-detection (git clone github.com/phantrungtien/fire-detection).
+# Pose 416 chu khong 320 nhu Pi: tren CUDA ca hai ~21 ms, ma 320 sot nguoi o xa
+# (do 11/10/2026: 3 nguoi cach ~6 m, 320 thay 1, 416 thay ca 3 voi conf 0.36-0.70).
+# --conf 0.3 vi CONF mac dinh 0.4 bo nguoi o xa (0.36).
+# yolo11n chu khong s: da thu s (32 vs 23 ms, nguoi xa 0.69 vs 0.37) nhung fps tut
+# ro tren GUI. File yolo11s-pose-416.onnx van con, doi lai la doi mot chu.
+# --h264: x264 superfast (CPU ~1 nhan) day MPEG-TS/UDP toi tram mat dat qua Tailscale,
+# 1,5 Mbps ~ 35,9 dB, tre phia gui ~80 ms. Danh cho 4G; MJPEG :8080 van chay cho LAN.
+# --no-mjpeg: tat :8080/stream (MJPEG ~20 Mbps an het 4G); /status van con. Bo co nay
+# de xem MJPEG lai tren LAN.
+# 4G yeu: ha --h264-kbps (800 ~ 34 dB). Doi IP neu tram mat dat khac.
+# 1280x736-raw-u8: camera 1280x720 that, model nhan uint8 (them_tien_xu_ly.py) nen
+# tien xu ly chay tren GPU. TRT 19.9 ms; gia lap xa x3 bat 19 vs 12 (960x544). Phat ra
+# GUI thu ve 960 (--stream-width) cho nhe WiFi. Engine 1280 build ~11 phut.
+# 11/10/2026: ve lai 960x544 - voi 1280 Jetson bao qua dong (oc3) ~2 lan/phut o 25W.
+# Qua 4G: --stream-width 640 (xem mjpeg_server Q_MIN/thich nghi).
+# 960x544-raw = export KHONG NMS -> chay TensorRT FP16 (track.Detector tu NMS bang cv2):
+# 18 ms vs 640x384 CUDA ~25-40 ms, bat xa hon (9 khung gia lap xa x3: 12 vs 8 nguoi).
+# Engine cache o tracking_pi5/trt_cache (build lan dau ~14 phut, sau doc ~8 s).
+# Pose chu khong detect: da thu yolo11n-640x384 (detect) 11/10/2026 - tren anh tinh
+# dem nhieu hon, nhung chay that nguoi dung thay fps thap va bat te hon. Giu pose.
+# Model 640x384 (chu nhat 16:9) chu khong 416 vuong: 416 phi 1/3 diem anh vao vien
+# xam. Cung ~25 ms, giu nguyen goc nhin rong, nguoi xa gap doi bat 2/3 thay vi 1/3.
+# Xa hon nua: yolo11n-pose-960x544.onnx (3/3, 40 ms). --zoom N cat giua: xa hon nhung
+# HEP goc nhin (zoom 2: 70 -> 39 deg), can --cam-width 1920 --cam-height 1080.
+# --fps 30: vong pose+nen ~30 ms/khung -> ra ~25-30 fps (do 11/10/2026). --quality 80
+# la TRAN: mang nghen thi mjpeg_server._thich_nghi() tu ha toi 35, thong thi nang lai.
+# Lua: van phat hien + ve hop len video, nhung /status, ROS va chu NGUOI chi tinh nguoi.
+# Lua ban 640 chu khong 320 nhu Pi: CUDA 17 ms (320: 10 ms), va 320 kem nhay (xem fire_stream.sh).
+# 19/10/2026: quay 4K (webcam XC-TECH), giai ma + cat zoom + co ve 1280x720 bang phan cung
+# (nvjpegdec + nvvidconv, xem GstCap._decode). VIC mac dinh chi ~170 MHz -> 4K->720p 22 fps;
+# ghim VIC len max (435 MHz) -> 29 fps. Dau + = chay bang root.
+ExecStartPre=+/bin/sh -c 'V=/sys/class/devfreq/15340000.vic; cat $V/max_freq > $V/min_freq'
+# 21/10/2026: GPU de DVFS tu chinh hay o 510/918 MHz -> pose xu_ly p50/p90 28/55 ms, cho
+# p90 25 ms, 27 fps (do --stamp). Ghim GPU max -> 22/29 ms, cho p90 3 ms, 29,8 fps; ~10 W,
+# 62 C, 0 su kien oc trong 30 s. Quay lai oc3 nhu 11/10 thi bo dong nay.
+ExecStartPre=+/bin/sh -c 'G=/sys/class/devfreq/17000000.gpu; cat $G/max_freq > $G/min_freq'
+# 23/10/2026: source them ~/Firefighting-drone (fire_drone): ground_range chay TRONG run_gui (an
+# nhanh xam toan canh, khong qua DDS), /fire/zoom doi vung cat luc dang bay, hop lua ->
+# /fire/detections cho fire_locator. Thieu workspace thi van stream, chi khong do mat dat.
+ExecStart=/bin/bash -c "source /opt/ros/humble/setup.bash; source /home/robomango/Firefighting-drone/install/setup.bash; cd /home/robomango/pi5/tracking_pi5; \
+    exec python3 -u run_gui.py --detect-only --device auto \
+      --width 1280 --height 720 --cam-width 3840 --cam-height 2160 --fps 30 --quality 80 --stream-every 1 \
+      --model yolo11n-pose-960x544-raw.onnx --conf 0.3 --threads 3 \
+      --h264 100.96.37.111:5600,100.82.93.76:5600 --h264-kbps 1500 --h264-fb-port 5601 --h264-kbps-min 1000 --hl-ae 100 --gamma 1.2 --no-mjpeg --stamp \
+      --fire-model /home/robomango/phantrungtien-fire-detection/models/best_nano_111_640.onnx \
+      --fire-conf 0.35 --fire-threads 1 --fire-hz 5 --fire-save /home/robomango/fire_dataset"
+# 23/10/2026 --fire-save: khung co hop lua + nhan YOLO -> ~/fire_dataset/<ngay>/ (<= 1 khung/s,
+# toi da 5 GB moi lan chay, dung khi dia con < 10 GB) de gom anh bao nham (thanh an toan vang
+# cua robot bi bao Fire 18/19 khung) ma train lai. Bo co nay = tat luu.
+# So nguoi ra ROS 2 /vision/person_count (std_msgs/Int32) qua Tailscale - xem
+# cyclonedds_tailscale.xml. Tram mat dat phai dat CUNG hai bien nay moi thay topic.
+Environment=RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+Environment=CYCLONEDDS_URI=file:///home/robomango/pi5/cyclonedds_tailscale.xml
+User=robomango
+SupplementaryGroups=video
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

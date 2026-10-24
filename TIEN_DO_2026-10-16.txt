@@ -1,0 +1,84 @@
+TIẾN ĐỘ 16/10/2026 — Jetson (trungtien-drone), camera + video H264 về laptop
+=============================================================================
+
+1. TRẠNG THÁI HIỆN TẠI
+----------------------
+- Service: mjpeg-stream (/etc/systemd/system/mjpeg-stream.service), enabled, Restart=always.
+  Chạy run_gui.py 1280x720@30, H264 x264 superfast -> 100.82.93.76:5600 (laptop), --no-mjpeg.
+- Video ổn định 29.8 fps, YOLO pose ~25–35 ms/khung.
+- Cờ đang dùng mới thêm hôm nay: --device auto, --h264-kbps-min 1000 (đã gỡ --stamp).
+- Máy: ổ còn trống 77 GB (65%), RAM trống ~3 GB, nhiệt ~64 °C, quạt do nvfancontrol điều khiển.
+- SSH từ laptop: ssh robomango@100.117.32.3 (Tailscale) hoặc ssh robomango@192.168.1.97 (cùng WiFi).
+
+2. ĐỘ TRỄ ĐÃ ĐO (dấu thời gian trong khung, pi5/latency_stamp.py)
+------------------------------------------------------------------
+- Ngay trên Jetson (gửi 127.0.0.1): lần đầu p50 104 ms -> sau đó p50 72 ms.
+- Jetson -> laptop qua WiFi/Tailscale đi thẳng: lần đầu p50 109 / p90 116 ms -> sau đó p50 76 / p90 90 ms.
+- Giảm ~33 ms (1 khung) là nhờ cờ -omit_video_pes_length 0 trong H264Out._spawn (run_gui.py, sửa 17:48
+  bởi người/phiên khác): TS ghi độ dài PES nên phía nhận không phải chờ gói khung sau.
+- A/B cùng luồng (loopback): TS cũ 116.6 ms | TS có độ dài PES 67.1 ms | RTP 67.2 ms
+  => KHÔNG cần chuyển sang RTP (không nhanh hơn, mà phải sửa GUI + h264_feedback).
+
+Chia 76 ms theo khâu:
+  chờ vòng nhận diện + YOLO + vẽ   ~19 ms
+  đẩy khung vào ffmpeg             ~3.5 ms
+  x264 nén (không giữ khung)       ~9 ms   (nạp -> ra AU của chính khung đó 11.8 ms)
+  mạng WiFi/Tailscale              ~4 ms
+  giải mã H264 thật                ~3–4 ms (đo riêng 2.7–4.2 ms/khung 720p)
+  ffmpeg PHÍA NHẬN giữ khung       ~50 ms  <- phần lớn nhất, CHƯA giải quyết
+- Đã thử không hiệu quả: -threads 1 / slice, -flush_packets 1, -max_delay 0; -avioflags direct thì
+  không giải mã được. GStreamer trên Jetson thiếu plugin tsdemux nên chưa so được.
+- Giả thuyết (chưa chứng minh): bộ tách khung H264 (parser) của ffmpeg chờ đầu khung kế tiếp
+  (~33 ms), còn ~15 ms chưa rõ. Ảnh hưởng mọi bộ nhận dùng ffmpeg (cv2.VideoCapture, ffplay).
+- cv2.VideoCapture ở phía nhận cộng thêm ~170–200 ms so với ffmpeg low-delay
+  (cùng luồng: ~290–300 ms vs ~104–120 ms). GUI trên laptop nên dùng ffmpeg/ffplay low-delay:
+    ffplay -fflags nobuffer -flags low_delay -probesize 32 -analyzeduration 0 -framedrop udp://@:5600
+
+3. CODE ĐÃ THÊM / SỬA
+---------------------
+- pi5/latency_stamp.py (mới): vẽ/đọc dải ô 24x2 (384x32 px, góc dưới trái) = giờ chụp ms + checksum.
+  Chạy ở trạm:  python3 latency_stamp.py udp://@:5600 robomango@100.117.32.3
+  (tham số thứ 2: đo lệch đồng hồ qua ssh rồi bù, khỏi cần NTP). Tự test: --test.
+  Bộ nhận dùng ffmpeg low-delay, chỉ cắt dải ô, -vsync passthrough.
+- run_gui.py:
+  * --stamp: vẽ giờ chụp vào khung (+ phần đo từng khâu [doan] do người/phiên khác thêm).
+  * --device auto: find_camera() tìm camera USB đầu tiên CHỈ qua sysfs (không hỏi camera),
+    tìm lại mỗi lần dựng gst -> rút/cắm, đổi cổng, đổi camera đều tự lên hình.
+    Không thấy camera thì kiểm tra mỗi 1 s, cắm vào là mở ngay (đo: ~5 s từ lúc cắm tới có hình).
+  * GstCap 3 chế độ, tự đổi sau 20 s không ra khung: 0 MJPG đúng cấu hình, 1 MJPG kích thước bất kỳ,
+    2 YUYV (raw). KHÔNG dùng decodebin (Jetson chọn giải mã NVMM -> not-negotiated).
+    isOpened() chờ đủ 3 chế độ (~65 s). Chế độ 1, 2 bỏ qua --zoom.
+- pi5/systemd/mjpeg-stream-jetson.service (file mẫu): --device auto, --h264-kbps-min 1000.
+  (file mẫu cho Pi/Docker mjpeg-stream.service KHÔNG đổi: Docker gắn cứng /dev/video0.)
+
+4. SỰ CỐ HỆ THỐNG ĐÃ XỬ LÝ
+--------------------------
+- Ổ NVMe đầy 100%: /var/log/uvcdynctrl-udev.log 84 GB, do 2 tiến trình uvcdynctrl (udev chạy khi cắm
+  camera ~17:27) kẹt vòng lặp ~40 MB/s. Đã làm rỗng log, tắt tiến trình, chặn luật udev:
+    /etc/udev/rules.d/80-uvcdynctrl.rules -> /dev/null   (xoá symlink này để khôi phục)
+  uvcdynctrl còn hỏi camera liên tục -> có thể là nguyên nhân camera rớt USB (-71) lúc 17:27 (chưa chứng minh).
+- automagic-fan.service crash 2369 lần (script cho Jetson Nano cũ, ghi /sys/devices/pwm-fan/target_pwm
+  không tồn tại), làm syslog tăng ~600 KB/phút. Đã: systemctl disable --now automagic-fan.
+  Khôi phục: sudo systemctl enable --now automagic-fan. Quạt thật do nvfancontrol điều khiển.
+- Camera rớt khi /dev/video0 đổi thành /dev/video1 -> nay dùng --device auto.
+
+Sao lưu service (trong pi5/):
+  mjpeg-stream.service.bak-truoc-stamp, .bak-video0, .bak-kbpsmin
+
+5. VẤN ĐỀ CÒN MỞ / VIỆC TIẾP THEO
+---------------------------------
+- [ ] ~50 ms ffmpeg phía nhận giữ khung: thử PyAV giải mã từng khung trực tiếp, hoặc phía gửi chèn
+      dấu kết thúc khung. Ước tính nếu được: LAN ~30–40 ms.
+- [ ] GUI laptop (repo GUI_Groundstation): đổi cv2.VideoCapture sang ffmpeg low-delay (bớt ~200 ms).
+- [ ] USB: camera rớt -71 lúc 17:27 và 17:52 (không do test), 18:02 thiết bị cổng 1-2.2 rớt.
+      17:57 rớt cả hub 1-1 là do rút hub. Khi lên drone: cắm camera thẳng vào Jetson, hub có nguồn riêng,
+      cố định dây (camera + modem 4G E3372 đang chung hub).
+- [ ] Bay qua 4G: hạ --h264-kbps-min xuống ~400–600. Tailscale qua 4G đi relay DERP Singapore
+      (~87 ms/chiều, ping laptop 112 ms). Nếu trạm mặt đất cũng 4G -> cần relay riêng trên VPS ở VN
+      (Tailscale peer relay hoặc derper) — ước tính 120–180 ms thay vì 200–300 ms.
+      Thử trước: APN modem IPv4v6 (http://192.168.8.1) xem Tailscale có đi thẳng IPv6 không.
+      Kênh điều khiển (MAVLink/ROS) chỉ đi trong Tailscale, KHÔNG mở ra Internet.
+- [ ] Jetson ưu tiên route 4G (192.168.8.1, metric 100) hơn WiFi (metric 600) — khi test trên bàn
+      Tailscale có thể đi relay; lần cuối kiểm tra (18:39) laptop đang qua DERP(sin) 112 ms.
+- [ ] Lỗi iptables connmark của Tailscale: kernel tegra không có CONNMARK — vô hại, bỏ qua.
+- [ ] Có người/phiên khác cũng sửa run_gui.py song song — tránh sửa cùng lúc.

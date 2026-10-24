@@ -34,6 +34,7 @@ from track import Detector, IoUTracker
 # 2 topic: /follow/command (String)  +  /follow/target (Vector3: ang_x, ang_y, z)
 # QoS mặc định (RELIABLE, depth 10) -> KHỚP với subscriber bên follow_control.
 ROS_OK = False
+STATS = {"persons": 0}  # so nguoi khung gan nhat — run_gui doc de ve HUD + /status
 _node = _pub_cmd = _pub_tgt = None
 try:
     import rclpy
@@ -447,7 +448,9 @@ def emit_command(cmd, ang_x=None, ang_y=None, z=None):
         emit_command._last = cmd
 
 
-def draw_pose(frame, kp_xy, kp_conf, color, th=0.3):
+def draw_pose(frame, kp_xy, kp_conf, color, th=0.5):
+    # th 0.5 chu khong 0.3: khop ngoai khung (hong khi nguoi dung sat camera) model
+    # van doan ra o ~0.3, ve len la thanh doan xuong noi toi mep anh.
     for a, b in SKELETON:
         if kp_conf[a] > th and kp_conf[b] > th:
             cv2.line(frame, tuple(kp_xy[a].astype(int)), tuple(kp_xy[b].astype(int)), color, 2)
@@ -599,6 +602,7 @@ def main(a):
         # --- 1 model: box + 17 keypoint, rồi gán ID bằng IoU ---
         dets = detector(frame, a.conf)
         live = ids_tracker.update(dets)
+        STATS["persons"] = len(live)
         t_inf = (time.perf_counter() - t0) * 1000
 
         # --- ReID + khóa/bám/tìm lại ---
@@ -718,7 +722,9 @@ def main(a):
 def detect_only(a):
     """Detect and draw every person; no ReID, target lock, or ROS commands."""
     detector = Detector(a.model, a.threads)
-    ids_tracker = IoUTracker(iou_thr=0.3, max_age=15, min_hits=1)
+    # Chi ve/dem: mượt + giu hop 3 khung (0,1 s o 30 fps) + phai thay 3 khung moi hien
+    # -> het rung, het chop tat, het hop rac 1 khung. Tre them ~1 khung, ve thi khong sao.
+    ids_tracker = IoUTracker(iou_thr=0.3, max_age=15, min_hits=3, smooth=0.7, hold=3)
     src = int(a.source) if a.source.isdigit() else a.source
     cap = cv2.VideoCapture(src, cv2.CAP_V4L2) if isinstance(src, int) else cv2.VideoCapture(src)
     if not cap.isOpened():
@@ -732,8 +738,13 @@ def detect_only(a):
         ok, frame = cap.read()
         if not ok:
             break
-        dets = detector(frame, a.conf)
+        dets = detector(frame, a.conf, classes=[0])  # model detect COCO co 80 lop, 0 = person
+        if dets.shape[1] > 6 and len(dets):  # reshape(0, -1, 3) loi khi khong co ai
+            # Pose: bo hop co < 4 khop ro - model hay ra hop chi om CANH TAY nguoi ngoi
+            # sat camera (3 khop). 90 khung that: dem dung 96% vs 19%, khong mat nguoi xa.
+            dets = dets[(dets[:, 6:].reshape(len(dets), -1, 3)[:, :, 2] > 0.5).sum(1) >= 4]
         live = ids_tracker.update(dets)
+        STATS["persons"] = len(live)
         for t in live:
             x1, y1, x2, y2 = map(int, t.box)
             color = (0, 255, 0)
@@ -742,7 +753,7 @@ def detect_only(a):
                         (x1, max(16, y1 - 7)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
             kp = t.kpts
-            if kp is not None:
+            if kp is not None:  # model detect thuong khong co khop -> chi hop
                 draw_pose(frame, kp[:, :2], kp[:, 2], color)
         cv2.putText(frame, f"PERSONS {len(live)}  DET {len(dets)}",
                     (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.65,

@@ -280,7 +280,9 @@ class FireTracker:
             if threads:
                 opt.intra_op_num_threads = threads
             self.sess = ort.InferenceSession(
-                str(model_path), opt, providers=providers or ["CPUExecutionProvider"]
+                str(model_path), opt, providers=providers or [
+                    p for p in ("CUDAExecutionProvider", "CPUExecutionProvider")
+                    if p in ort.get_available_providers()]
             )
             self.inp = self.sess.get_inputs()[0].name
             self.size = self.sess.get_inputs()[0].shape[2] or 640
@@ -302,6 +304,8 @@ class FireTracker:
                 raise ValueError(
                     f"khong co lop nao ten {tuple(classes)} trong {self.names}")
 
+        # Nhan dau dong HUD: dem nguoi (--classes person) thi ghi NGUOI, con lai LUA.
+        self.hud_label = "NGUOI" if classes and set(classes) == {"person"} else "LUA"
         self.tracker = Tracker(confirm_hits=confirm_hits, max_miss=max_miss)
         self.tracks = []  # vet da xac nhan cua lan suy dien GAN NHAT
         self.ms = 0.0  # thoi gian suy dien khung cuoi, de hien len HUD
@@ -354,7 +358,7 @@ class FireTracker:
         self.infer(img)
         return self.draw_cached(img)
 
-    def draw_cached(self, img):
+    def draw_cached(self, img, hud=None):
         """Ve cac vet CUA LAN SUY DIEN GAN NHAT, khong chay model.
 
         Tach ra vi tren Pi mot lan suy dien mat ~410 ms con khung hinh ve moi
@@ -367,29 +371,47 @@ class FireTracker:
             x1, y1, x2, y2 = t.box
             cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
             _nhan(img, f"#{t.id} {name} {t.score:.2f}", x1, y1, color)
+        if hud is not None:
+            # run_gui dua ca dong ("NGUOI 3 | 30 FPS"): ms/FPS cua model LUA o day
+            # bi doc nham la fps video. Toc do lua van in trong log ("yolo NN ms").
+            _hud(img, hud)
+            return len(self.tracks)
         # FPS suy dien = 1000/ms, de so sanh cac backend/kich thuoc model tren HUD
         fps = 1000.0 / self.ms if self.ms > 0 else 0.0
-        _hud(img, f"LUA {len(self.tracks)} | {self.ms:.0f} ms | {fps:.1f} FPS")
+        _hud(img, f"{self.hud_label} {len(self.tracks)} | {self.ms:.0f} ms | {fps:.1f} FPS")
         return len(self.tracks)
+
+
+def _co_chu(img):
+    """(co chu, do day net) theo chieu cao anh.
+
+    Net 1 px bi JPEG q70 (va chroma subsampling cua no) xoa nhoe thanh vet mo.
+    Net 2 px tro len moi song sot qua nen. Co theo chieu cao de 480p va 1080p
+    nhin cung mot kich thuoc tren GUI.
+    """
+    k = img.shape[0] / 480
+    return 0.6 * k, max(2, round(2 * k))  # ponytail: hang so chinh tay, to/nho thi sua 0.6
 
 
 def _nhan(img, text, x, y, color):
     """Nhan tren canh tren cua hop, lat xuong duoi khi hop cham mep tren anh."""
-    (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
-    ty = y - th - 4 if y - th - 4 >= 0 else y + 2
-    cv2.rectangle(img, (x, ty), (x + tw + 4, ty + th + 4), color, -1)
-    cv2.putText(img, text, (x + 2, ty + th + 1), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
-                (20, 20, 20), 1, cv2.LINE_AA)
+    fs, t = _co_chu(img)
+    (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, fs, t)
+    ty = y - th - 6 if y - th - 6 >= 0 else y + 2
+    cv2.rectangle(img, (x, ty), (x + tw + 6, ty + th + 6), color, -1)
+    cv2.putText(img, text, (x + 3, ty + th + 2), cv2.FONT_HERSHEY_SIMPLEX, fs,
+                (20, 20, 20), t, cv2.LINE_AA)
 
 
 def _hud(img, text):
     """Mot dong o goc duoi-trai. KHONG co hop nao cung phai hien, no la bang
     chung "model dang chay ma khong thay gi" - khac han voi "model chet"."""
     h = img.shape[0]
-    cv2.putText(img, text, (8, h - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                (0, 0, 0), 3, cv2.LINE_AA)
-    cv2.putText(img, text, (8, h - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                (230, 230, 230), 1, cv2.LINE_AA)
+    fs, t = _co_chu(img)
+    cv2.putText(img, text, (8, h - 10), cv2.FONT_HERSHEY_SIMPLEX, fs,
+                (0, 0, 0), t + 3, cv2.LINE_AA)
+    cv2.putText(img, text, (8, h - 10), cv2.FONT_HERSHEY_SIMPLEX, fs,
+                (255, 255, 255), t, cv2.LINE_AA)
 
 
 def demo(model=None):

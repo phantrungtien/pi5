@@ -55,6 +55,8 @@ mot phu thuoc nang co the hong theo cach kho chan doan.
 """
 
 import argparse
+import json
+import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -69,6 +71,20 @@ _latest = None  # JPEG byte moi nhat
 _seq = 0  # tang moi khung — de client biet co khung moi chua
 _in = _out = _bytes = 0  # dem cho dong thong ke, xem _stats_loop()
 _raw = None  # khung BGR moi nhat cho luong YOLO — xem _yolo_loop()
+_tracker = None  # de /status doc so vet, xem Handler._status()
+# Chat luong JPEG THICH NGHI theo mang, xem _thich_nghi(). Moi nguon doc _q khi nen.
+# ponytail: mot _q chung cho moi client - client cham nhat keo ca bon xuong. Mot GUI
+# thi dung; nhieu nguoi xem tren mang khac nhau thi phai nen rieng tung client.
+_q = _q_max = 70
+# San 50 chu khong 35: duoi 50 anh 960x540 vo khoi ro, nhin te hon rot fps. Mang
+# khong chay noi o 50 thi de rot khung (fps giam) chu khong ha tiep.
+Q_MIN = 50
+_tot = 0  # so giay thong suot lien tiep, xem _thich_nghi()
+# Bo dem gui nho (~3 khung): bo dem mac dinh vai MB nuot het nghen mang, write() khong
+# bao gio cham -> khong ha chat luong duoc, con video tre dan vai giay.
+SNDBUF = 128 * 1024
+_persons = None
+_mjpeg_on = True  # run_gui --no-mjpeg: chi H.264, /stream tra 404 (con /status van chay)  # so nguoi tu run_gui (model pose rieng, khong qua _tracker)
 
 
 def _luu(jpg):
@@ -86,6 +102,25 @@ def _luu(jpg):
         _bytes += len(jpg)
 
 
+def _thich_nghi(sent, skipped, busy):
+    """Moi giay: rot khung hay nghen ghi -> ha chat luong; thong suot -> nang dan.
+
+    `skipped`: khung moi ra truoc khi khung cu gui xong (mang cham hon camera).
+    `busy`: ti le thoi gian ket trong write() - bo dem TCP day. Ha nhanh (-10),
+    nang cham: phai thong suot 3 GIAY LIEN TIEP moi +5. Nang moi giay thi qua
+    Tailscale chat luong dao 40<->80 vai giay mot lan (do 11/10/2026) - nhin chop.
+    """
+    global _q, _tot
+    drop = skipped / max(1, sent + skipped)
+    with _lock:
+        if drop > 0.1 or busy > 0.7:
+            _q, _tot = max(Q_MIN, _q - 10), 0
+        elif drop == 0 and busy < 0.3:
+            _tot += 1
+            if _tot >= 3:
+                _q, _tot = min(_q_max, _q + 5), 0
+
+
 def _stats_loop(period, tracker=None):
     """In nhip that moi `period` giay: nguon dua vao bao nhieu, minh nen ra bao nhieu.
 
@@ -101,7 +136,7 @@ def _stats_loop(period, tracker=None):
             _in = _out = _bytes = 0
         yolo = f", yolo {tracker.ms:.0f} ms" if tracker is not None else ""
         print(f"[mjpeg] nguon {i / period:5.1f} Hz  ->  nen {o / period:5.1f} fps, "
-              f"{b / period / 1024:6.0f} KB/s{yolo}", flush=True)
+              f"{b / period / 1024:6.0f} KB/s, q{_q}{yolo}", flush=True)
 
 
 def _yolo_loop(tracker):
@@ -154,7 +189,6 @@ def _ve_hop(tracker, img):
 def grab(device, width, height, every, quality, tracker=None):
     """Doc camera mai mai. Camera rut ra hay loi thi cho roi mo lai, khong chet."""
     global _latest, _seq
-    params = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
     cap = None
     idx = 0
     while True:
@@ -201,7 +235,7 @@ def grab(device, width, height, every, quality, tracker=None):
         if idx % every:
             continue
 
-        ok, jpg = cv2.imencode(".jpg", _ve_hop(tracker, frame), params)
+        ok, jpg = cv2.imencode(".jpg", _ve_hop(tracker, frame), [cv2.IMWRITE_JPEG_QUALITY, _q])
         if ok:
             _luu(jpg.tobytes())
 
@@ -247,7 +281,6 @@ def grab_ros(topic, every, quality, tracker=None):
     from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
     from sensor_msgs.msg import Image
 
-    params = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
     state = {"idx": 0, "warned": False}
 
     def on_image(msg):
@@ -262,7 +295,7 @@ def grab_ros(topic, every, quality, tracker=None):
                 print(f"[mjpeg] khong hieu encoding '{msg.encoding}' - bo qua", flush=True)
                 state["warned"] = True
             return
-        ok, jpg = cv2.imencode(".jpg", _ve_hop(tracker, img), params)
+        ok, jpg = cv2.imencode(".jpg", _ve_hop(tracker, img), [cv2.IMWRITE_JPEG_QUALITY, _q])
         if ok:
             _luu(jpg.tobytes())  # _luu tu khoa lay — `_lock` KHONG tai nhap duoc
 
@@ -282,8 +315,35 @@ def grab_ros(topic, every, quality, tracker=None):
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.0"
 
+    def _status(self):
+        """JSON so vat dang bam, vd {"counts": {"person": 2}, "total": 2, "ms": 410}.
+
+        GUI hoi lai moi ~0,5 s. Doc `tracks` khong can khoa: luong YOLO thay ca
+        list mot lan (gan bien), khong sua tai cho.
+        """
+        counts = {}
+        tracks = _tracker.tracks if _tracker is not None else []
+        for t in tracks:
+            name = _tracker.names.get(t.cls, f"lop{t.cls}")
+            counts[name] = counts.get(name, 0) + 1
+        if _persons is not None:
+            counts["person"] = _persons
+        body = json.dumps({"counts": counts, "total": sum(counts.values()),
+                           "ms": round(_tracker.ms) if _tracker else None,
+                           "t": time.time()}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Access-Control-Allow-Origin", "*")  # GUI web khac cong
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
-        if self.path not in ("/stream", "/"):
+        if self.path == "/status":
+            self._status()
+            return
+        if self.path not in ("/stream", "/") or not _mjpeg_on:
             self.send_error(404)
             return
 
@@ -292,7 +352,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
 
+        self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, SNDBUF)
         last = -1
+        t0, sent, skipped, busy = time.monotonic(), 0, 0, 0.0
         try:
             while True:
                 with _lock:
@@ -300,13 +362,22 @@ class Handler(BaseHTTPRequestHandler):
                 if jpg is None or seq == last:
                     time.sleep(0.005)  # chua co khung moi — dung gui lai khung cu
                     continue
+                if last >= 0:
+                    skipped += seq - last - 1
                 last = seq
+                tw = time.monotonic()
                 self.wfile.write(
                     f"--{BOUNDARY}\r\nContent-Type: image/jpeg\r\n"
                     f"Content-Length: {len(jpg)}\r\n\r\n".encode()
                 )
                 self.wfile.write(jpg)
                 self.wfile.write(b"\r\n")
+                now = time.monotonic()
+                busy += now - tw
+                sent += 1
+                if now - t0 >= 1.0:
+                    _thich_nghi(sent, skipped, busy / (now - t0))
+                    t0, sent, skipped, busy = now, 0, 0, 0.0
         except (BrokenPipeError, ConnectionResetError):
             pass  # GUI dong tab hay rot WiFi — chuyen binh thuong, khong phai loi
 
@@ -331,6 +402,12 @@ def main():
     p.add_argument("--detect", default=None, metavar="MODEL.onnx",
                    help="bam vet lua/khoi bang YOLO ONNX va ve hop len khung hinh. "
                         "Vd: --detect ~/firedrop_sim/tracking/best_nano_111_640.onnx")
+    p.add_argument("--classes", default="Fire",
+                   help="lop giu lai, cach bang dau phay. Dem nguoi bang model COCO: "
+                        "--detect yolov8n.onnx --classes person")
+    p.add_argument("--max-box", type=float, default=0.25,
+                   help="bo hop lon hon ti le khung nay. Nguoi dung gan camera "
+                        "chiem >25%% khung - dem nguoi thi dat 1.0")
     p.add_argument("--conf", type=float, default=0.35,
                    help="nguong diem cua --detect (mac dinh 0.35)")
     p.add_argument("--stats", type=float, default=5.0,
@@ -348,10 +425,14 @@ def main():
         # "hien ngay khi thay, xoa sau ~0,8 giay khong thay". Giu mac dinh (2/5)
         # thi phai 0,8 giay hop moi hien va 2 giay sau khi vat di hop van con.
         tracker = FireTracker(a.detect, conf=a.conf, threads=2,
-                              confirm_hits=1, max_miss=2)
+                              confirm_hits=1, max_miss=2, max_box_frac=a.max_box,
+                              classes=tuple(a.classes.split(",")))
         print(f"[mjpeg] bam vet bang {a.detect} - lop {list(tracker.names.values())}",
               flush=True)
 
+    global _tracker, _q, _q_max
+    _tracker = tracker
+    _q = _q_max = a.quality
     if a.ros_topic:
         target, args = grab_ros, (a.ros_topic, max(1, a.every), a.quality, tracker)
     else:

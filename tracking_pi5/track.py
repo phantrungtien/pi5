@@ -15,11 +15,13 @@ IMGSZ = 640  # chi la mac dinh cho letterbox(); Detector doc kich thuoc THAT tu 
 
 
 def letterbox(img, size=IMGSZ):
+    """size: int (vuong) hoac (H, W) — model export chu nhat 16:9 khong phi diem anh vao vien."""
+    sh, sw = (size, size) if isinstance(size, int) else size
     h, w = img.shape[:2]
-    r = min(size / h, size / w)
+    r = min(sh / h, sw / w)
     nh, nw = round(h * r), round(w * r)
-    pad_t, pad_l = (size - nh) // 2, (size - nw) // 2
-    out = np.full((size, size, 3), 114, np.uint8)
+    pad_t, pad_l = (sh - nh) // 2, (sw - nw) // 2
+    out = np.full((sh, sw, 3), 114, np.uint8)
     out[pad_t:pad_t + nh, pad_l:pad_l + nw] = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_LINEAR)
     return out, r, pad_l, pad_t
 
@@ -32,17 +34,54 @@ class Detector:
         so = ort.SessionOptions()
         so.intra_op_num_threads = threads  # Pi 5 has 4 cores
         so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        self.sess = ort.InferenceSession(path, so, providers=["CPUExecutionProvider"])
+        # Jetson Orin: CUDA 11 ms vs CPU 31 ms (320). Pi chi co CPU -> ort tu bo CUDA.
+        avail = ort.get_available_providers()
+        self.sess = ort.InferenceSession(path, so, providers=[
+            p for p in ("CUDAExecutionProvider", "CPUExecutionProvider") if p in avail])
+        # Hai kieu export: CO NMS -> [1,300,6+51] da loc; KHONG NMS ("raw") -> [1,4+nc+51,N]
+        # va NMS lam o day bang cv2. Raw de chay TensorRT: NMS trong graph lam TRT loi
+        # ("GetSupportedList"), con raw thi TRT FP16 nhanh hon CUDA nhieu lan.
+        shp = self.sess.get_outputs()[0].shape
+        self.raw = shp[1] < shp[2]
+        kpt = self.sess.get_modelmeta().custom_metadata_map.get("kpt_shape")
+        self.nk = int(np.prod(eval(kpt))) if kpt else 0  # noqa: S307 - metadata cua chinh model
+        self.nc = shp[1] - 4 - self.nk
+        if self.raw and "TensorrtExecutionProvider" in avail:
+            import os
+            cache = os.path.join(os.path.dirname(os.path.abspath(path)), "trt_cache")
+            try:
+                # Lan dau build engine vai phut (stream chua len trong luc do), sau doc cache.
+                self.sess = ort.InferenceSession(path, so, providers=[
+                    ("TensorrtExecutionProvider", {
+                        "trt_fp16_enable": True, "trt_engine_cache_enable": True,
+                        "trt_engine_cache_path": cache, "trt_timing_cache_enable": True,
+                        "trt_timing_cache_path": cache}),
+                    "CUDAExecutionProvider", "CPUExecutionProvider"])
+            except Exception as e:  # noqa: BLE001 - TRT hong thi van chay CUDA, cham hon
+                print(f"[det] TensorRT loi ({type(e).__name__}) -> CUDA", flush=True)
+        print(f"[det] {path} {'raw+NMS cv2' if self.raw else 'NMS trong model'} "
+              f"-> {self.sess.get_providers()[0]}", flush=True)
         inp = self.sess.get_inputs()[0]
         self.iname = inp.name
+        # Model export half=True (FP16) nhan va tra float16; con lai float32.
+        self.dtype = np.float16 if "float16" in inp.type else np.float32
+        # Model qua them_tien_xu_ly.py: nhan thang uint8 BGR [1,H,W,3], GPU tu doi.
+        self.u8 = "uint8" in inp.type
         # Export dung dynamic=False nen shape la SO THAT, khong phai chuoi. Doc tu day
         # de doi model 640/416/320 chi la doi duong dan file, khong phai sua code.
-        self.imgsz = int(inp.shape[2])
+        self.imgsz = ((int(inp.shape[1]), int(inp.shape[2])) if self.u8
+                      else (int(inp.shape[2]), int(inp.shape[3])))
 
     def __call__(self, frame, conf=0.35, classes=None):
         lb, r, pl, pt = letterbox(frame, self.imgsz)
-        x = np.ascontiguousarray(lb[:, :, ::-1].transpose(2, 0, 1)[None]).astype(np.float32) / 255.0
-        out = self.sess.run(None, {self.iname: x})[0][0]
+        if self.u8:
+            x = lb[None]
+        else:
+            x = (np.ascontiguousarray(lb[:, :, ::-1].transpose(2, 0, 1)[None])
+                 .astype(np.float32) / 255.0).astype(self.dtype)
+        out = self.sess.run(None, {self.iname: x})[0][0].astype(np.float32)
+        if self.raw:
+            out = self._nms(out, conf, classes)
         out = out[out[:, 4] >= conf]
         if classes is not None and len(out):
             out = out[np.isin(out[:, 5].astype(int), classes)]
@@ -59,6 +98,28 @@ class Detector:
             k[:, :, 0] = (k[:, :, 0] - pl) / r
             k[:, :, 1] = (k[:, :, 1] - pt) / r
         return out
+
+    def _nms(self, out, conf, classes, iou=0.45, top=300):
+        """[4+nc+nk, N] tho -> [M, 6+nk] = x1,y1,x2,y2,conf,cls,kpts giong export co NMS.
+        iou 0.45 chu khong 0.7 (mac dinh ultralytics): o 0.7 hop GOP hai nguoi dung sat
+        nhau (IoU ~0.5 voi tung nguoi) song sot -> dem du. Do 90 khung that: 0.45 bo het
+        hop gop, khong mat nguoi xa nao."""
+        o = out.T
+        sc = o[:, 4:4 + self.nc]
+        cls = sc.argmax(1)
+        s = sc[np.arange(len(o)), cls]
+        m = s >= conf
+        if classes is not None:
+            m &= np.isin(cls, classes)
+        o, s, cls = o[m], s[m], cls[m]
+        if not len(o):
+            return np.zeros((0, 6 + self.nk), np.float32)
+        cx, cy, bw, bh = o[:, 0], o[:, 1], o[:, 2], o[:, 3]
+        keep = np.array(cv2.dnn.NMSBoxes(
+            np.stack([cx - bw / 2, cy - bh / 2, bw, bh], 1).tolist(), s.tolist(), conf, iou),
+            int).reshape(-1)[:top]
+        xyxy = np.stack([cx - bw / 2, cy - bh / 2, cx + bw / 2, cy + bh / 2], 1)
+        return np.concatenate([xyxy, s[:, None], cls[:, None], o[:, 4 + self.nc:]], 1)[keep]
 
 
 def iou_matrix(a, b):
@@ -83,8 +144,19 @@ class Track:
         self.trail = collections.deque(maxlen=48)
         self.push()
 
-    def set(self, det):
-        """det = one detector row: box, conf, cls (+ 51 keypoint values on a pose model)."""
+    def set(self, det, smooth=0.0):
+        """det = one detector row: box, conf, cls (+ 51 keypoint values on a pose model).
+
+        smooth > 0: EMA voi khung truoc (trong so cua cu = smooth) cho hop VA khop.
+        Khop cu duoi 0.3 la rac (model doan) - lay thang khop moi, khong tron vao.
+        """
+        if smooth and hasattr(self, "det") and len(det) == len(self.det):
+            old, det = self.det, det.copy()
+            det[:5] = smooth * old[:5] + (1 - smooth) * det[:5]
+            if len(det) > 6:
+                o, n = old[6:].reshape(-1, 3), det[6:].reshape(-1, 3)
+                ok = o[:, 2] >= 0.3
+                n[ok] = smooth * o[ok] + (1 - smooth) * n[ok]   # view -> ghi thang vao det
         self.det, self.box = det, det[:4]
         self.conf, self.cls = float(det[4]), int(det[5])
 
@@ -104,8 +176,12 @@ class IoUTracker:
     Upgrade path: swap this class for BoT-SORT/ByteTrack if id switches actually hurt.
     """
 
-    def __init__(self, iou_thr=0.3, max_age=15, min_hits=3):
+    def __init__(self, iou_thr=0.3, max_age=15, min_hits=3, smooth=0.0, hold=0):
+        """smooth: EMA hop/khop (0 = tat, 0.5 = tre ~1 khung). hold: van tra vet da mat
+        toi `hold` khung - hop khong chop tat khi model hut mot khung. Ca hai MAC DINH TAT:
+        vong FOLLOW can toa do tuoi, khong tre."""
         self.iou_thr, self.max_age, self.min_hits = iou_thr, max_age, min_hits
+        self.smooth, self.hold = smooth, hold
         self.tracks, self._next = [], 1
 
     def update(self, dets):
@@ -117,7 +193,7 @@ class IoUTracker:
             if ti in used_t or di in used_d:
                 continue
             t = self.tracks[ti]
-            t.set(dets[di])
+            t.set(dets[di], self.smooth)
             t.age, t.hits = 0, t.hits + 1
             t.push()
             used_t.add(ti); used_d.add(di)
@@ -130,7 +206,7 @@ class IoUTracker:
                 self.tracks.append(Track(self._next, dets[di]))
                 self._next += 1
         self.tracks = [t for t in self.tracks if t.age <= self.max_age]
-        return [t for t in self.tracks if t.hits >= self.min_hits and t.age == 0]
+        return [t for t in self.tracks if t.hits >= self.min_hits and t.age <= self.hold]
 
 
 def color(i):
