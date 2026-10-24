@@ -29,13 +29,19 @@ from gi.repository import Gst  # noqa: E402
 GRAY = (960, 540)
 
 
+def jpeg_ok(data):
+    """Khung JPEG nguyen ven: mo dau SOI (FFD8), ket thuc EOI (FFD9). XC-TECH 4K dem 0 sau EOI
+    cho du buffer co dinh (do 24/10/2026: 276480 B, 3-7 KB so 0 cuoi) nen bo 0 cuoi truoc."""
+    return data[:2] == b"\xff\xd8" and data.rstrip(b"\0").endswith(b"\xff\xd9")
+
+
 def main():
     dev, cam_w, cam_h, fps, w, h, l, t, cw, ch, gray_fd = sys.argv[1:12]
     gray_fd = int(gray_fd)
     Gst.init(None)
     gw, gh = GRAY
     pl = Gst.parse_launch(
-        f"v4l2src device={dev} io-mode=2 ! image/jpeg,width={cam_w},height={cam_h},"
+        f"v4l2src name=src device={dev} io-mode=2 ! image/jpeg,width={cam_w},height={cam_h},"
         f"framerate={fps}/1 ! nvjpegdec ! video/x-raw(memory:NVMM) ! tee name=t "
         "t. ! queue max-size-buffers=1 leaky=downstream ! nvvidconv name=cut ! "
         f"video/x-raw,format=BGRx,width={w},height={h} ! videoconvert ! video/x-raw,format=BGR ! "
@@ -45,6 +51,20 @@ def main():
         # async=false: valve dong thi nhanh nay khong co khung preroll -> ca pipeline ket PAUSED
         "appsink name=g max-buffers=1 drop=true sync=false async=false")
     cut, valve = pl.get_by_name("cut"), pl.get_by_name("v")
+    bad = [0]
+
+    def drop_bad(_pad, info):
+        # Gia thuyet 24/10/2026: camera thinh thoang gui khung JPEG cut cut -> nvjpegdec
+        # "gst_adapter_push: assertion 'GST_IS_BUFFER'" roi SEGV. Bo khung hong truoc nvjpegdec.
+        b = info.get_buffer()
+        n = b.get_size()
+        if jpeg_ok(b.extract_dup(0, n)):  # ponytail: chep ~300 KB x 30 fps = 9 MB/s, re
+            return Gst.PadProbeReturn.OK
+        bad[0] += 1
+        print(f"[gst_zoom] bo khung JPEG hong #{bad[0]} ({n} B)", file=sys.stderr, flush=True)
+        return Gst.PadProbeReturn.DROP
+
+    pl.get_by_name("src").get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, drop_bad)
 
     def crop(l, t, cw, ch):
         # left/right/top/bottom la TOA DO x0,x1,y0,y1 (xem GstCap._decode)
@@ -86,4 +106,11 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:] == ["--selfcheck"]:
+        assert jpeg_ok(b"\xff\xd8..\xff\xd9")
+        assert jpeg_ok(b"\xff\xd8..\xff\xd9" + b"\0" * 7000)      # camera dem 0 sau EOI
+        assert not jpeg_ok(b"\xff\xd8...." + b"\0" * 7000)        # cut cut, mat EOI
+        assert not jpeg_ok(b"\0\0..\xff\xd9")                      # mat SOI
+        print("gst_zoom selfcheck OK")
+    else:
+        main()
