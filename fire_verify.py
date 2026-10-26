@@ -40,9 +40,12 @@ MODELS = ("gemini-3.1-flash-lite", "gemini-3.5-flash-lite")
 WAIT2 = 3.0     # mot model da noi lua, model kia cham qua WAIT2 s -> nhan mot phieu (log ghi ten mot model).
                 # Dang bay: cho them = lua troi khoi khung. Doi 2/2 tuyet doi thi dat 99.
 WORKERS = 3     # vet khac nhau hoi song song: anh lua khong xep hang sau bao nham trong lab
+# Hoi ve vat TRONG khung xanh (crop(..., mark=True)), khong phai ca anh cat. 27/10: den radio telemetry mot
+# minh -> "khong"; dat sat anh lua (lua lot vao anh cat 128 px) -> ca hai model "lua", ke ca khong bat anh in.
 PROMPT = ("This image is a crop around a region that the onboard fire detector of a firefighting drone flagged "
-          "as fire. Is there real fire (visible flames) in it? Smoke alone, sunlight, lamps, reflections and "
-          "orange/red objects are NOT fire.")
+          "as fire; the cyan rectangle marks that region. Is there real fire (visible flames) INSIDE the cyan "
+          "rectangle? Flames that are only outside the rectangle do NOT count. Smoke alone, sunlight, lamps, LEDs, "
+          "reflections and orange/red objects are NOT fire.")
 SCHEMA = {"type": "OBJECT", "properties": {"fire": {"type": "BOOLEAN"}}, "required": ["fire"]}
 # Che do anh in (FireVerify.picture): thu to A0 lua in nam duoi dat - khong co cau nay Gemini co the bac
 # hop YOLO dung to giay la "anh", ma hop da khop YOLO thi duong quet cung khong gui -> mat ca hai duong.
@@ -67,15 +70,22 @@ SCAN_SCHEMA = {"type": "OBJECT", "properties": {"fires": {"type": "ARRAY", "item
     "required": ["box_2d", "real"]}}}, "required": ["fires"]}
 
 
-def crop(img, box):
-    """Vuong quanh hop, rong gap 1.5 canh dai hop (Gemini can ngu canh: den tran hay lua), toi thieu 128 px."""
+def crop(img, box, mark=False):
+    """Vuong quanh hop, rong gap 1.5 canh dai hop (Gemini can ngu canh: den tran hay lua), toi thieu 128 px.
+    mark: ve khung xanh (cyan - khong lan voi mau lua) quanh hop, cho PROMPT hoi dung vat trong khung."""
     x1, y1, x2, y2 = box
     h, w = img.shape[:2]
     s = max(1.5 * max(x2 - x1, y2 - y1), 128)
     cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
-    c = img[int(max(0, cy - s / 2)):int(min(h, cy + s / 2)), int(max(0, cx - s / 2)):int(min(w, cx + s / 2))]
+    ox, oy = int(max(0, cx - s / 2)), int(max(0, cy - s / 2))
+    c = img[oy:int(min(h, cy + s / 2)), ox:int(min(w, cx + s / 2))]
     k = SIDE / max(c.shape[:2])
-    return cv2.resize(c, None, fx=k, fy=k, interpolation=cv2.INTER_AREA) if k < 1 else c
+    c = cv2.resize(c, None, fx=k, fy=k, interpolation=cv2.INTER_AREA) if k < 1 else c.copy()
+    if mark:
+        k = min(k, 1.0)
+        cv2.rectangle(c, (int((x1 - ox) * k), int((y1 - oy) * k)), (int((x2 - ox) * k) - 1, int((y2 - oy) * k) - 1),
+                      (255, 255, 0), 2)
+    return c
 
 
 def _gan(a, b):
@@ -84,6 +94,12 @@ def _gan(a, b):
         return True
     s = max(a[2] - a[0], a[3] - a[1])
     return abs(a[0] + a[2] - b[0] - b[2]) / 2 <= s and abs(a[1] + a[3] - b[1] - b[3]) / 2 <= s
+
+
+def _cung_co(a, b):
+    """Hai hop co canh dai chenh nhau khong qua 2 lan."""
+    la, lb = max(a[2] - a[0], a[3] - a[1]), max(b[2] - b[0], b[3] - b[1])
+    return max(la, lb) <= 2 * min(la, lb)
 
 
 def so_khop(gem, yolo):
@@ -153,7 +169,11 @@ class FireVerify:
             # YOLO mat dau roi bat lai (vat dang di chuyen) -> so hieu moi: dung chung o cua vet thay trong
             # RECHECK s o gan do. 24/10: o dung yen o cho hoi -> dien thoai cam tay bi hoi lai 9 lan lien;
             # cua so 3 s thi bao nham chop tat (thay 1 khung, mat vai giay) bi hoi lai moi lan hien.
-            s = next((o for o in self.v.values() if now - o[3] < RECHECK and _gan(o[2], t.box)), None)
+            # CUNG CO (canh dai chenh <= 2x): 27/10 00:4x den cam radio telemetry dat canh anh lua tren dien
+            # thoai an luon 'ok' cua hop man hinh (355 px, tam cach 277 px) -> AI:OK + ra ROS ma Gemini chua
+            # duoc hoi lan nao. Vat bat lai thi cung co; hop nho moi canh hop to la vat KHAC -> hoi rieng.
+            s = next((o for o in self.v.values()
+                      if now - o[3] < RECHECK and _gan(o[2], t.box) and _cung_co(o[2], t.box)), None)
             if s is None:
                 s = [None, now, t.box, now, 0]  # o[4]: so lan "khong" lien tiep
             self.v[t.id] = s
@@ -164,7 +184,7 @@ class FireVerify:
                 s[1], s[0] = now, "yolo"
             else:
                 s[1], s[0] = now, "?"
-                self.q.put((s, cv2.imencode(".jpg", crop(img, t.box), [cv2.IMWRITE_JPEG_QUALITY, 90])[1]))
+                self.q.put((s, cv2.imencode(".jpg", crop(img, t.box, mark=True), [cv2.IMWRITE_JPEG_QUALITY, 90])[1]))
         return s
 
     def _worker(self):
@@ -398,6 +418,18 @@ def _selfcheck():
     except requests.ConnectionError:
         pass
 
+    # den telemetry canh man hinh dien thoai da 'ok' (27/10): KHONG an ket qua, phai hoi rieng
+    dt = FireVerify(None)
+    dt.q.put = lambda item: None
+    man = Track(31, (400, 145, 755, 353), 0, 0.8)
+    dt.filter(img, [man], 500.0)
+    dt.v[31][0], dt.v[31][1] = "ok", 500.0
+    den = Track(32, (531, 488, 600, 566), 0, 0.45)
+    assert [t.id for t in dt.filter(img, [man, den], 502.0)] == [31] and dt.v[32] is not dt.v[31], \
+        "hop nho canh hop 'ok' to la vat khac"
+    bat_lai = Track(33, (410, 150, 760, 360), 0, 0.8)  # chinh man hinh, YOLO mat dau roi bat lai
+    assert dt.v.get(33) is None and [t.id for t in dt.filter(img, [bat_lai], 503.0)] == [33], "vat bat lai van dung chung"
+
     g = [(100, 100, 200, 220), (300, 100, 400, 200), (600, 50, 700, 150)]  # 3 hinh lua, YOLO thay 1 + 1 bao nham
     y = [(110, 120, 190, 210), (900, 600, 950, 650)]
     assert so_khop(g, y) == ([y[0]], g[1:], [y[1]])
@@ -444,5 +476,5 @@ if __name__ == "__main__":
         for f in sys.argv[2:]:
             im = cv2.imread(f)
             t0 = time.monotonic()
-            ok, m = fv.ask(cv2.imencode(".jpg", crop(im, (0, 0, im.shape[1], im.shape[0])))[1].tobytes())
+            ok, m = fv.ask(cv2.imencode(".jpg", crop(im, (0, 0, im.shape[1], im.shape[0]), mark=True))[1].tobytes())
             print(f"{f}: {'LUA' if ok else 'khong'} ({time.monotonic() - t0:.2f} s, {m})")
