@@ -5,10 +5,12 @@
 # 27/10/2026: so do cao / max_range la de xuat, CHO USER DUYET truoc khi giao diem chay.
 fire_mission:
   ros__parameters:
-    search_alt: 5.0      # GUI khong gui alt thi bay o day
-    min_alt: 2.0         # alt GUI gui ngoai 2-5 m = tu choi (GUI mac dinh 20 m -> bi tu choi, phai keo xuong)
-    max_alt: 5.0
-    drop_alt: 3.0        # tha cach mat dat cho dom lua 3 m (fire_mission tu cat <= alt)
+    # 27/10/2026: ros2_bridge doc 4 so duoi day gui len GUI -> nut chon "Bay tim" 2-5 m va
+    # "Ha cach lua" 2..do cao bay, mac dinh 5 / 3. Doi o day la GUI doi theo (restart drone-ros).
+    search_alt: 5.0      # mac dinh do cao bay (GUI cu khong gui alt thi bay o day)
+    min_alt: 2.0         # alt / ha cach lua GUI gui duoi muc nay = tu choi
+    max_alt: 5.0         # alt GUI gui tren muc nay = tu choi
+    drop_alt: 3.0        # mac dinh ha cach mat cho dom lua 3 m roi tha; GUI chon trong [min_alt, alt]
     ring_step: 2.0       # = 8 m * 5/20: giu ty le vung camera thay nhu thiet ke o 20 m
     search_radius: 2.0
     check_radius: 2.0
