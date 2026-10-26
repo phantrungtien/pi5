@@ -25,3 +25,6 @@ tracking_pi5/run_gui.py.truoc-*
 
 # Khoa service account GCP (drone-jetson). BI MAT, khong bao gio commit.
 hidden-lyceum-*.json
+
+# Cong tac che do anh lua in (run_gui._PictureFlag): touch de bat khi thu to A0, rm de tat.
+fire_picture

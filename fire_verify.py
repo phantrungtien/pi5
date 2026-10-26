@@ -44,6 +44,9 @@ PROMPT = ("This image is a crop around a region that the onboard fire detector o
           "as fire. Is there real fire (visible flames) in it? Smoke alone, sunlight, lamps, reflections and "
           "orange/red objects are NOT fire.")
 SCHEMA = {"type": "OBJECT", "properties": {"fire": {"type": "BOOLEAN"}}, "required": ["fire"]}
+# Che do anh in (FireVerify.picture): thu to A0 lua in nam duoi dat - khong co cau nay Gemini co the bac
+# hop YOLO dung to giay la "anh", ma hop da khop YOLO thi duong quet cung khong gui -> mat ca hai duong.
+PICTURE = " For this test, flames in a printed photo, poster or on a screen DO count as fire."
 HOLD = 4.0      # ponytail: cho Gemini toi da 4 s (p90 2 s qua Wi-Fi lab). Bay bang 4G thi do lai.
 DOWN = 10.0     # loi mang/API -> bo qua Gemini 10 s roi thu lai
 RECHECK = 15.0  # vet bi bac 2 lan lien -> hoi lai sau 15 s: lua that bi bac nham khong bi giu mai
@@ -112,6 +115,10 @@ class FireVerify:
         self.q = queue.Queue()
         self._tok, self._exp, self._prune = None, 0.0, 0.0
         self._scan_next, self._scan_busy = 0.0, False
+        # Quet ca khung thay lua ma YOLO SOT -> on_fire(hop, meta, shape): Gemini nam quyen quyet dinh (26/10/2026,
+        # SITL: to A0 toi YOLO 0 hop ke ca nguong 0.05, Gemini quet ra dung to giay). picture: tinh ca lua trong
+        # anh in / man hinh - Gemini goi to A0 la real=false. Chi de thu to A0; mac dinh chi lua that.
+        self.on_fire, self.picture = None, False
         self.pool = cf.ThreadPoolExecutor(max_workers=WORKERS * len(models))
         for _ in range(WORKERS):
             threading.Thread(target=self._worker, daemon=True).start()
@@ -198,17 +205,17 @@ class FireVerify:
             return True, "+".join(yes)
         raise err
 
-    def scan(self, img, tracks, every):
-        """Ghi song song: moi `every` s gui nguyen khung cho Gemini o luong rieng, so voi hop YOLO (CHUA loc)
-        cua chinh khung do. Goi moi khung tu luong lua; khong tra gi, khong dung toi ROS."""
+    def scan(self, img, tracks, every, meta=None):
+        """Moi `every` s gui nguyen khung cho Gemini o luong rieng, so voi hop YOLO (CHUA loc) cua chinh khung
+        do: ghi log, va hop YOLO sot -> on_fire (meta = vung cat cua khung nay). Goi moi khung tu luong lua."""
         now = time.monotonic()
         if self._scan_busy or now < self._scan_next:
             return
         self._scan_busy, self._scan_next = True, now + every
         yolo = [(tuple(int(v) for v in t.box), round(float(t.score), 2)) for t in tracks]
-        threading.Thread(target=self._scan1, args=(img.copy(), yolo), daemon=True).start()
+        threading.Thread(target=self._scan1, args=(img.copy(), yolo, meta), daemon=True).start()
 
-    def _scan1(self, img, yolo):
+    def _scan1(self, img, yolo, meta=None):
         t0, wall = time.monotonic(), time.time()
         try:
             h, w = img.shape[:2]
@@ -221,6 +228,10 @@ class FireVerify:
             that = sum(r for _, r in gem)
             print(f"[scan] Gemini {len(gem)} hop ({that} lua that) | YOLO {len(yolo)} | khop {len(khop)}, YOLO sot "
                   f"{len(chi_g)}, chi YOLO {len(chi_y)} ({dt:.1f} s)", flush=True)
+            sot = [b for b, r in gem if b in chi_g and (r or self.picture)]
+            if sot and self.on_fire is not None:
+                self.on_fire(sot, meta, img.shape)
+                print(f"[scan] Gemini nam quyen: {len(sot)} hop YOLO sot -> /fire/detections", flush=True)
             if self.scan_dir:
                 import os
                 d = os.path.join(self.scan_dir, time.strftime("%Y%m%d", time.localtime(wall)))
@@ -240,7 +251,7 @@ class FireVerify:
 
     def _ask1(self, model, jpg):
         """Mot lan goi mot model -> True neu thay lua that."""
-        return bool(self._post(model, jpg, PROMPT, SCHEMA, 256, 8)["fire"])
+        return bool(self._post(model, jpg, PROMPT + (PICTURE if self.picture else ""), SCHEMA, 256, 8)["fire"])
 
     def _post(self, model, jpg, prompt, schema, max_out, read_timeout):
         """Anh + cau hoi -> JSON theo schema."""
@@ -405,6 +416,23 @@ def _selfcheck():
     rec = [json.loads(x) for f in _g.glob(sc.scan_dir + "/*/scan.jsonl") for x in open(f)]
     assert len(rec) == 1 and rec[0]["gemini"] == [[99, 100, 199, 220, True]] and len(rec[0]["yolo"]) == 2
     assert rec[0]["jpg"], "lech (YOLO c khong khop) -> luu khung"
+
+    # YOLO sot -> Gemini nam quyen; anh in (real=false) chi khi picture
+    def quet(fires, tracks, picture):
+        q = FireVerify(None)
+        q._post, q.picture, out = (lambda *a: {"fires": fires}), picture, []
+        q.on_fire = lambda b, m, s: out.append((b, m))
+        q.scan(img, tracks, every=10, meta="m")
+        for _ in range(200):
+            if not q._scan_busy:
+                break
+            time.sleep(0.01)
+        return out
+    that, in_ = {"box_2d": [139, 78, 306, 156], "real": True}, {"box_2d": [139, 78, 306, 156], "real": False}
+    assert quet([that], [], False) == [([(99, 100, 199, 220)], "m")], "YOLO khong thay, lua that -> ra ROS"
+    assert quet([that], [a], False) == [], "YOLO da thay cho do -> de duong YOLO + xac nhan lo"
+    assert quet([in_], [], False) == [], "anh lua in: mac dinh khong tinh"
+    assert quet([in_], [], True) == [([(99, 100, 199, 220)], "m")], "thu to A0: tinh ca anh in"
     print("OK")
 
 

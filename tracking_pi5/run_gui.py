@@ -168,10 +168,35 @@ def _fire_loop(tracker):
             _fire_saver(img, tracks, meta)  # ca hop Gemini bac: chinh la anh bao nham can de train lai
         if _fire_verify is not None:
             if _fire_scan and _fire_ros is not None and (_fire_ros.armed or _fire_ros.scan_cmd):
-                _fire_verify.scan(img, tracks, _fire_scan)  # hop YOLO CHUA loc: so ca hop Gemini bac
+                _fire_verify.scan(img, tracks, _fire_scan, meta)  # hop YOLO CHUA loc: so ca hop Gemini bac
             tracks = _fire_verify.filter(img, tracks)
         if meta is not None and _fire_ros is not None:
             _fire_ros.publish_fire(tracks, meta, img.shape, tracker.names)
+
+
+PICTURE_FLAG = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "fire_picture")
+
+
+class _PictureFlag:
+    """FireVerify.picture: --fire-picture HOAC co file ~/jetson/fire_picture. Doc lai moi lan Gemini hoi nen bat/tat
+    bang `touch` / `rm` qua ssh, KHONG khoi dong lai service (dong lenh service nam o /etc, sua phai sudo)."""
+
+    def __init__(self, on):
+        self.on = on
+
+    def __bool__(self):
+        return self.on or os.path.exists(PICTURE_FLAG)
+
+
+def _gemini_fire(boxes, meta, shape):
+    """Gemini quet ca khung thay lua YOLO SOT -> /fire/detections nhu hop YOLO, diem 1.0. Den tre 1-7 s:
+    stamp = gio CHUP khung (meta), fire_locator lay pose drone dung luc do."""
+    if _fire_ros is None or meta is None:
+        return
+    from types import SimpleNamespace
+    cls = min(_fire_tracker.keep_cls) if _fire_tracker.keep_cls else 0
+    _fire_ros.publish_fire([SimpleNamespace(box=b, score=1.0, cls=cls) for b in boxes], meta, shape,
+                           _fire_tracker.names)
 
 
 class _FireRos:
@@ -838,7 +863,10 @@ class RosCap:
         if img is None:
             return
         self.frame = np.ascontiguousarray(img)   # rgb8 trả về view lật kênh + read-only
-        _offer_fire_frame(self.frame)
+        # Khung nguyên, không cắt: hộp lửa ra /fire/detections theo điểm ảnh của chính topic
+        # (sim Gazebo 1920x1080). Thiếu meta thì _fire_loop thấy lửa mà không gửi gì.
+        h, w = self.frame.shape[:2]
+        _offer_fire_frame(self.frame, (time.time(), (0, 0, w, h)))
         with mj._lock:
             mj._in += 1                          # để dòng [mjpeg] đếm đúng nhịp nguồn
 
@@ -925,8 +953,12 @@ def main():
                    help="Gemini xac nhan vet lua truoc khi ra /fire/detections: khoa service account "
                         ".json (Vertex) - xem fire_verify.py")
     p.add_argument("--fire-scan", type=float, default=0.0, metavar="S",
-                   help="can --fire-verify: Gemini quet nguyen khung moi S s, so voi YOLO, chi ghi log + luu khung "
-                        "lech vao <--fire-save>/scan. Chi khi drone arm hoac /fire/scan true (~$0.0007/lan)")
+                   help="can --fire-verify: Gemini quet nguyen khung moi S s, so voi YOLO, ghi log + luu khung "
+                        "lech vao <--fire-save>/scan; lua YOLO SOT -> /fire/detections (Gemini nam quyen). "
+                        "Chi khi drone arm hoac /fire/scan true (~$0.0007/lan)")
+    p.add_argument("--fire-picture", action="store_true",
+                   help="Gemini tinh ca lua trong ANH IN / man hinh (thu to A0). Mac dinh chi lua that. "
+                        "Khong sua duoc dong lenh service thi: touch ~/jetson/fire_picture (rm de tat)")
     a = p.parse_args()
 
     import person_follow_reid as pf
@@ -956,6 +988,9 @@ def main():
                                           scan_dir=os.path.join(a.fire_save, "scan") if a.fire_save else None)
                 _fire_tracker.tag = _fire_verify.tag
                 _fire_scan = a.fire_scan
+                _fire_verify.on_fire, _fire_verify.picture = _gemini_fire, _PictureFlag(a.fire_picture)
+                print(f"[ai] anh lua in: {'BAT' if _fire_verify.picture else 'tat'} (--fire-picture / {PICTURE_FLAG})",
+                      flush=True)
                 if _fire_scan:
                     print(f"[scan] Gemini quet nguyen khung moi {_fire_scan:g} s khi drone ARM hoac /fire/scan true",
                           flush=True)
