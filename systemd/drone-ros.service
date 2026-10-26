@@ -1,0 +1,31 @@
+[Unit]
+Description=MAVROS + fire_locator + ros2_bridge (WebSocket 8765 cho GUI_NATIVE) - Jetson
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=robomango
+# Cung RMW/CycloneDDS voi mjpeg-stream.service, khong thi khong thay /fire/detections cua run_gui.
+Environment=RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+Environment=CYCLONEDDS_URI=file:///home/robomango/jetson/cyclonedds_tailscale.xml
+# 27/10/2026: ba tien trinh trong mot unit, `wait -n`: mot cai chet = ca nhom khoi dong lai sau 5 s.
+#  - MAVROS: Pixhawk 6C qua USB (by-id, khong phu thuoc ttyACM0/1). gcs_url day MAVLink toi tablet
+#    qua Tailscale (duong "mang" cua profile dien thoai, conn2 udpin 14550).
+#  - fire_locator: hop lua /fire/detections (run_gui) -> /fire/target. mission:=false: fire_mission
+#    do bridge bat/huy theo nut task tren GUI.
+#  - ros2_bridge.py (chep tu GUI_NATIVE/tools): --spawn + tham so drone that, xem fire_mission_real.yaml.
+# MAVROS giu cong USB: script pymavlink doc FC phai dung service nay truoc.
+ExecStart=/bin/bash -c "source /opt/ros/humble/setup.bash; source /home/robomango/Firefighting-drone/install/setup.bash; \
+    ros2 launch fire_drone mavros.launch.py \
+      fcu_url:=/dev/serial/by-id/usb-Holybro_Pixhawk6C_48003C000F51333337383131-if00:115200 \
+      gcs_url:=udp://@100.96.37.111:14550 & \
+    ros2 launch fire_drone fire_mission.launch.py real:=true mission:=false & \
+    python3 -u /home/robomango/GUI_NATIVE/tools/ros2_bridge.py --spawn \
+      --mission-params /home/robomango/jetson/fire_mission_real.yaml & \
+    wait -n"
+KillMode=control-group
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
