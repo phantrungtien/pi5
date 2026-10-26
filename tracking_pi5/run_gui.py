@@ -333,8 +333,8 @@ class H264Out:
     DOWN_GAP, UP_AFTER, UP_STEP = 2.0, 5.0, 150
     SILENT = 5.0                       # da tung co bao cao ma im 5 s = mat het -> ha
 
-    def __init__(self, dest, kbps, preset, fb_port=0, kbps_min=400, gamma=1.0):
-        self.dest, self.kbps, self.preset = dest, kbps, preset
+    def __init__(self, dest, kbps, preset, fb_port=0, kbps_min=400, gamma=1.0, ir=False):
+        self.dest, self.kbps, self.preset, self.ir = dest, kbps, preset, ir
         # Nhieu dich "A:5600,B:5600" (laptop + dien thoai): ffmpeg van MOT lenh nhu cu (giu
         # muxdelay/PES da do tre) nhung day vao cong noi bo, luong _fanout chep tung goi ra
         # moi dich. Ca hai tram cung bao mat goi ve fb_port -> bitrate theo tram te hon
@@ -413,11 +413,16 @@ class H264Out:
         # cua TS ve 0 -> tram bao mat gia. Tinh nhu mot lan "doi" de adapt() bo qua bao cao do.
         self.last_change = time.monotonic()
         br = f"{self.kbps}k"
+        # --h264-ir: intra-refresh = lam moi dan tung cot trong 30 khung thay IDR moi giay, VBV
+        # 100 ms. Do 27/10 (testsrc 960x540 900k): khung lon nhat 13,6 -> 8,7 KB, khong con cuc
+        # IDR don len 4G. Vao giua luong cham hon ~1 s (doi SPS + het mot vong lam moi).
+        ir = ["-intra-refresh", "1"] if self.ir else []
+        vbv = f"{self.kbps // 10}k" if self.ir else br
         self.p = subprocess.Popen(
             ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "rawvideo",
              "-pix_fmt", "bgr24", "-s", f"{w}x{h}", "-use_wallclock_as_timestamps", "1",
              "-i", "-", "-c:v", "libx264", "-preset", self.preset, "-tune", "zerolatency",
-             "-pix_fmt", "yuv420p", "-b:v", br, "-maxrate", br, "-bufsize", br,
+             "-pix_fmt", "yuv420p", "-b:v", br, "-maxrate", br, "-bufsize", vbv, *ir,
              "-g", "30", "-threads", "2", "-vsync", "passthrough",  # ffmpeg 4.4 (22.04): chua co -fps_mode
              # muxdelay mac dinh 0.7 s: TS giu goi lai -> tre ~680 ms (do). Tat thi ~1 khung.
              "-muxdelay", "0", "-muxpreload", "0", "-flush_packets", "1",
@@ -426,8 +431,8 @@ class H264Out:
              "-omit_video_pes_length", "0",
              "-f", "mpegts", f"udp://{self.dest}?pkt_size=1128"],
             stdin=subprocess.PIPE)
-        print(f"[h264] x264 {self.preset} {w}x{h} {self.kbps} kbps -> udp://{self.dest}",
-              flush=True)
+        print(f"[h264] x264 {self.preset} {w}x{h} {self.kbps} kbps{' intra-refresh' if self.ir else ''}"
+              f" -> udp://{self.dest}", flush=True)
 
     def push(self, frame, t_push=None):
         with self.cv:
@@ -931,6 +936,8 @@ def main():
                    help="tat MJPEG :8080/stream (khoi nen JPEG, khoi ton bang thong). "
                         "/status van chay. Dung kem --h264 khi bay qua 4G")
     p.add_argument("--h264-preset", default="superfast")
+    p.add_argument("--h264-ir", action="store_true",
+                   help="x264 intra-refresh thay khung IDR moi giay: bitrate deu, mat goi 4G lanh dan")
     p.add_argument("--stamp", action="store_true",
                    help="ve gio chup vao goc duoi trai de do tre (jetson/latency_stamp.py o tram)")
     p.add_argument("--stream-every", type=int, default=1,
@@ -1027,7 +1034,7 @@ def main():
             v4l2_set(dev, auto_exposure=3, gain=0, backlight_compensation=0)
     mj._mjpeg_on = not a.no_mjpeg
     h264 = (H264Out(a.h264, a.h264_kbps, a.h264_preset, a.h264_fb_port, a.h264_kbps_min,
-                    a.gamma) if a.h264 else None)
+                    a.gamma, a.h264_ir) if a.h264 else None)
     mj._q = mj._q_max = a.quality                # tran chat luong; mang nghen thi Handler ha xuong
 
     # Chi phat khung pf DA VE XONG: hop/xuong khop 100% voi hinh, video di theo nhip
