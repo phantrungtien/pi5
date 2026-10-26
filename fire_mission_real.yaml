@@ -1,7 +1,7 @@
 # Tham so fire_mission cho DRONE THAT, nap qua ros2_bridge.py --mission-params (systemd/drone-ros.service).
 # Khong co file nay, `ros2 run fire_drone fire_mission` lay mac dinh SIM: bay 20 m, tran 120 m,
 # tha o 20 m, vong tim 24 m. Drone that bay toi da 5 m (user 24/10/2026).
-# Vong tim/kiem tra 2 m, max_zoom 6: giong fire_mission.launch.py real:=true (sua mot cho thi sua ca hai).
+# Vong tim/kiem tra 2 m, max_zoom 2: giong fire_mission.launch.py real:=true (sua mot cho thi sua ca hai).
 # 27/10/2026: so do cao / max_range la de xuat, CHO USER DUYET truoc khi giao diem chay.
 fire_mission:
   ros__parameters:
@@ -13,7 +13,7 @@ fire_mission:
     drop_alt: 3.0        # mac dinh ha cach mat cho dom lua 3 m roi tha; GUI chon trong [min_alt, alt]
     ring_step: 2.0       # = 8 m * 5/20: giu ty le vung camera thay nhu thiet ke o 20 m
     search_radius: 2.0         # mac dinh "Pham vi tim" tren GUI (GUI cu khong gui thi dung so nay)
-    max_search_radius: 10.0    # GUI chon 0-10 m, quá = tu choi. De xuat 27/10, CHO USER DUYET
+    max_search_radius: 10.0    # GUI chon 0-10 m, quá = tu choi. user 27/10: nguoi bay tu chon, khong nhap cao
     check_radius: 2.0
-    max_zoom: 6.0
-    max_range: 30.0      # diem cham xa hon 30 m = tu choi; khop FENCE_RADIUS de xuat
+    max_zoom: 2.0        # user 27/10/2026: o 5 m camera thay ~7x4 m, zoom cao vo ich; x1..x6 tim 10 m = ~58 phut, x1..x2 = ~9
+    max_range: 30.0      # diem cham xa hon 30 m = tu choi; (khong bat fence, user 27/10)
