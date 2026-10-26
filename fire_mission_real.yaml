@@ -12,7 +12,8 @@ fire_mission:
     max_alt: 5.0         # alt GUI gui tren muc nay = tu choi
     drop_alt: 3.0        # mac dinh ha cach mat cho dom lua 3 m roi tha; GUI chon trong [min_alt, alt]
     ring_step: 2.0       # = 8 m * 5/20: giu ty le vung camera thay nhu thiet ke o 20 m
-    search_radius: 2.0
+    search_radius: 2.0         # mac dinh "Pham vi tim" tren GUI (GUI cu khong gui thi dung so nay)
+    max_search_radius: 10.0    # GUI chon 0-10 m, quá = tu choi. De xuat 27/10, CHO USER DUYET
     check_radius: 2.0
     max_zoom: 6.0
     max_range: 30.0      # diem cham xa hon 30 m = tu choi; khop FENCE_RADIUS de xuat
