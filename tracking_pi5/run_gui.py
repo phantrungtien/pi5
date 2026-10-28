@@ -210,9 +210,14 @@ class _FireRos:
 
     Mot luong vua spin vua dua khung xam cho ground_range: khong khoa, khong dua nhau.
     Node khac tren Jetson (MAVROS, fire_mission) phai cung RMW + CYCLONEDDS_URI moi thay topic.
+    Vach ngam tha bong (draw_drop) doc pose/van toc/rel_alt cua MAVROS - ve TREN khung, nen khop
+    dung khung va dung zoom; tram mat dat (tablet, laptop) chi viec xem video.
     """
+    # ponytail: lenh -> servo ~40 ms (MAVROS 27/10) + co cau mo chua do. Chinh sau lan tha thu: bong
+    # roi truoc vong thi tang, sau vong thi giam (chi anh huong khi drone dang troi).
+    DROP_DELAY = 0.1
 
-    def __init__(self, cap_ref):
+    def __init__(self, cap_ref, calib="", cam_off=(0.20, 0.0, -0.02), cam_to_drop=0.17):
         import rclpy
         from rclpy.executors import SingleThreadedExecutor
         from rclpy.qos import DurabilityPolicy, QoSProfile
@@ -245,6 +250,30 @@ class _FireRos:
             self.gr = None
             print(f"[fire] khong co fire_drone ({e}) -> KHONG do mat dat. "
                   "source ~/Firefighting-drone/install/setup.bash truoc", flush=True)
+        self.calib, self._ksize = None, None
+        self.pose = self.vel = self.rel_alt = (0.0, None)   # (gio nhan monotonic, gia tri)
+        try:
+            from ament_index_python.packages import get_package_share_directory
+            from fire_drone.fire_locator import ground_pixel, impact_point
+            from fire_drone.marker_detector import calib_for, load_calib, quat_to_rot
+            from geometry_msgs.msg import PoseStamped, TwistStamped
+            from std_msgs.msg import Float64
+            self._fx = (ground_pixel, impact_point, calib_for, quat_to_rot)
+            self.calib = load_calib(calib or os.path.join(get_package_share_directory("fire_drone"),
+                                                          "config", "drone_cam_3840x2160.yaml"))
+            self.cam_off = np.array(cam_off, float)
+            self.drop_off = self.cam_off - [cam_to_drop, 0.0, 0.0]
+            stamp = lambda name: lambda m: setattr(self, name, (time.monotonic(), m))  # noqa: E731
+            self.node.create_subscription(PoseStamped, "/mavros/local_position/pose", stamp("pose"),
+                                          qos_profile_sensor_data)
+            self.node.create_subscription(TwistStamped, "/mavros/local_position/velocity_local",
+                                          stamp("vel"), qos_profile_sensor_data)
+            self.node.create_subscription(Float64, "/mavros/global_position/rel_alt", stamp("rel_alt"),
+                                          qos_profile_sensor_data)
+            print(f"[drop] vach ngam: ong kinh {list(self.cam_off)} m, tha sau ong kinh {cam_to_drop} m",
+                  flush=True)
+        except Exception as e:  # noqa: BLE001 - thieu calib/fire_drone: van stream, chi khong co vach ngam
+            print(f"[drop] KHONG ve vach ngam: {type(e).__name__}: {e}", flush=True)
         threading.Thread(target=self._loop, daemon=True).start()
         print("[ROS] /fire/zoom -> camera, lua -> /fire/detections"
               + (", ground_range trong tien trinh" if self.gr else ""), flush=True)
@@ -266,6 +295,65 @@ class _FireRos:
         cap = self._cap()
         if hasattr(cap, "set_zoom"):
             cap.set_zoom(float(msg.data))
+
+    def draw_drop(self, frame, cap):
+        """'+' trang = tam camera (truc quang). Vong xanh = cho bong cham dat NEU NHA NGAY LUC NAY: mang
+        van toc drone, tinh nghieng; ban kinh = 0.5 m tren mat dat. Vong chi co khi pose MAVROS moi
+        (< 0.5 s) va con cao > 0.5 m; ngoai khung thi khong ve."""
+        if self.calib is None:
+            return
+        ground_pixel, impact_point, calib_for, quat_to_rot = self._fx
+        h, w = frame.shape[:2]
+        if hasattr(cap, "_box"):
+            if time.monotonic() - cap.zoom_t < 0.2:     # ~70 ms dau sau doi zoom: khung con vung cat CU
+                return
+            (l, t, cw, ch), size = cap._box(), (cap.cam_w, cap.cam_h)
+        else:                                           # RosCap (sim): khung nguyen, khong cat
+            (l, t, cw, ch), size = (0, 0, w, h), (w, h)
+        if size != self._ksize:
+            self._K, self._D = calib_for(self.calib, *size)
+            self._ksize = size
+
+        def px(uv):  # diem anh khung goc -> khung dang ve (nguoc cong thuc publish_fire)
+            return round((uv[0] + 0.5 - l) * w / cw - 0.5), round((uv[1] + 0.5 - t) * h / ch - 0.5)
+
+        def mark(fn, *args, color):  # vien den day truoc: con thay tren nen trang chay
+            fn(frame, *args, (0, 0, 0), 4, cv2.LINE_AA)
+            fn(frame, *args, color, 2, cv2.LINE_AA)
+
+        cx, cy = px(self._K[:2, 2])
+        for a, b in (((cx - 14, cy), (cx + 14, cy)), ((cx, cy - 14), (cx, cy + 14))):
+            mark(cv2.line, a, b, color=(255, 255, 255))
+
+        now = time.monotonic()
+        (tp, pose), (tv, vel), (ta, alt) = self.pose, self.vel, self.rel_alt
+        if pose is None or now - tp > 0.5:
+            return
+        p, q = pose.pose.position, pose.pose.orientation
+        pos, R = np.array([p.x, p.y, p.z]), quat_to_rot(q.x, q.y, q.z, q.w)
+        v = (np.array([vel.twist.linear.x, vel.twist.linear.y, vel.twist.linear.z])
+             if vel is not None and now - tv < 0.5 else np.zeros(3))
+        # mat dat = cho ARM (rel_alt reset luc arm, z local troi theo khi ap: 27/10 da lech -1.2 m truoc arm);
+        # chua co rel_alt thi coi ngang goc EKF nhu fire_locator
+        gz = pos[2] - alt.data if alt is not None and now - ta < 1.0 else 0.0
+        drop = pos + R @ self.drop_off
+        if drop[2] - gz < 0.5:
+            return
+        hit = impact_point(drop, v, gz, self.DROP_DELAY)
+        uv = ground_pixel(hit, pos, R, self.cam_off, self._K, self._D)
+        if uv is None:
+            return
+        x, y = px(uv)
+        if not (0 <= x < w and 0 <= y < h):
+            return
+        edge = ground_pixel(hit + [0.5, 0.0, 0.0], pos, R, self.cam_off, self._K, self._D)
+        r = max(6, round(np.hypot(*np.subtract(px(edge), (x, y))))) if edge is not None else 12
+        mark(cv2.circle, (x, y), r, color=(255, 255, 0))
+        mark(cv2.circle, (x, y), 2, color=(255, 255, 0))
+        txt = f"THA {drop[2] - gz:.1f}m"
+        cv2.putText(frame, txt, (x + r + 6, y + 6), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 4, cv2.LINE_AA)
+        cv2.putText(frame, txt, (x + r + 6, y + 6), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2,
+                    cv2.LINE_AA)
 
     def _loop(self):
         n, t_log = 0, time.monotonic() + 5
@@ -973,6 +1061,13 @@ def main():
     p.add_argument("--fire-picture", action="store_true",
                    help="Gemini tinh ca lua trong ANH IN / man hinh (thu to A0). Mac dinh chi lua that. "
                         "Khong sua duoc dong lenh service thi: touch ~/jetson/fire_picture (rm de tat)")
+    # Vach ngam tha bong ve len video (_FireRos.draw_drop). Mac dinh = drone that, do bang thuoc.
+    p.add_argument("--calib", default="",
+                   help="camera_info yaml cua KHUNG GOC cam_w x cam_h. Trong = fire_drone/config/drone_cam_3840x2160.yaml")
+    p.add_argument("--cam-offset", default="0.20,0,-0.02", metavar="X,Y,Z",
+                   help="tam FC -> ong kinh, m, x truoc y trai z len (= camera_offset launch real:=true, do 27/10/2026)")
+    p.add_argument("--cam-to-drop", type=float, default=0.17, metavar="M",
+                   help="co cau tha nam SAU ong kinh bao nhieu m theo truc doc than (user do 29/10/2026: 170 mm)")
     a = p.parse_args()
 
     import person_follow_reid as pf
@@ -1021,7 +1116,7 @@ def main():
     cap_ref = []                                 # `show` can hoi tuoi khung cua chinh no
     if _fire_tracker is not None and _pub_count is not None:  # _pub_count = rclpy da init duoc
         try:
-            _fire_ros = _FireRos(cap_ref)
+            _fire_ros = _FireRos(cap_ref, a.calib, [float(x) for x in a.cam_offset.split(",")], a.cam_to_drop)
         except Exception as e:  # noqa: BLE001
             print(f"[ROS] khong tao duoc node lua ({e}) -> chi ve hop len video", flush=True)
 
@@ -1080,6 +1175,13 @@ def main():
             _fire_tracker.draw_cached(frame, hud=hud)
         else:
             _hud(frame, hud)
+        if _fire_ros is not None:
+            try:                                 # truoc khi thu nho: toa do theo khung cap.w x cap.h
+                _fire_ros.draw_drop(frame, cap)
+            except Exception as e:  # noqa: BLE001 - so MAVROS rac (NaN...) khong duoc lam mat video
+                if not getattr(show, "drop_err", False):
+                    show.drop_err = True         # in mot lan: 30 Hz la ngap journal
+                    print(f"[drop] loi ve vach ngam, bo qua: {type(e).__name__}: {e}", flush=True)
         h, w = frame.shape[:2]
         if a.stream_width and w > a.stream_width:
             # Model can 1280 de bat nguoi xa; GUI khong can - nho lai cho nhe WiFi.
