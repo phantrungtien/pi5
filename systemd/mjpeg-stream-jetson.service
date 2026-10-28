@@ -56,11 +56,17 @@ TimeoutStartSec=infinity
 # 23/10/2026: source them ~/Firefighting-drone (fire_drone): ground_range chay TRONG run_gui (an
 # nhanh xam toan canh, khong qua DDS), /fire/zoom doi vung cat luc dang bay, hop lua ->
 # /fire/detections cho fire_locator. Thieu workspace thi van stream, chi khong do mat dat.
+# 29/10/2026 (user): bo --hl-ae 100 --gamma 1.2 -> AE GOC cua camera. HighlightAE lam cho den
+# phong lab (15/10), nay Gemini da loc lua gia; ngoai nang no danh nhau voi auto-gain XC-TECH ->
+# video trang (bay 27/10). XC-TECH qua UVC CHI co auto_exposure=1 (Manual), khong co 3: "AE goc" =
+# trang thai LUC MOI CAP DIEN (auto_exposure 0, exposure 78). Da ghi Manual (vd chay --hl-ae) thi
+# ket Manual toi khi RUT DIEN camera (authorized 0/1 khong du). Do 29/10 phong toi: ro den -> median
+# giu ~150; che/bo che -> trang 1 khung roi ve ~150 sau ~1,5 s. Bo --stamp (chi de do tre).
 ExecStart=/bin/bash -c "source /opt/ros/humble/setup.bash; source /home/robomango/Firefighting-drone/install/setup.bash; cd /home/robomango/jetson/tracking_pi5; \
     exec python3 -u run_gui.py --detect-only --device auto \
       --width 1280 --height 720 --cam-width 3840 --cam-height 2160 --fps 30 --quality 80 --stream-every 1 \
       --model yolo11n-960x544-raw.onnx --conf 0.3 --threads 3 \
-      --stream-width 960 --h264 100.96.37.111:5600 --h264-kbps 900 --h264-fb-port 5601 --h264-kbps-min 900 --hl-ae 100 --gamma 1.2 --no-mjpeg --stamp \
+      --stream-width 960 --h264 100.96.37.111:5600 --h264-kbps 900 --h264-fb-port 5601 --h264-kbps-min 900 --no-mjpeg \
       --fire-model /home/robomango/phantrungtien-fire-detection/models/best_nano_111_640.onnx \
       --fire-conf 0.2 --fire-threads 1 --fire-hz 5 \
       --fire-verify /home/robomango/jetson/hidden-lyceum-473116-p8-1f580efa4c6d.json --fire-scan 3"
