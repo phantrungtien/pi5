@@ -50,11 +50,13 @@ assert ae.step(img(120, 0.05)) < 50                          # den chay 5% -> to
 assert ae.step(img(40, 0.05)) > 50                           # ca khung qua toi -> sang len du den chay
 assert ae.step(img(120, 0.0)) > 50                           # khong chay gi -> sang len
 assert ae.step(img(120, 0.01)) == 50                         # trong vung on dinh -> giu
+assert HighlightAE.__init__.__defaults__ == (1,)             # san 100 us: XC-TECH 4K min = 1, khong phai 3
 ae.e = 3.0
 assert ae.step(img(30, 0.0)) > 3.4                           # khong ket o e nho
 ae.e = 100.0
 assert ae.step(img(30, 0.0)) > 100                           # o e_max van toi -> sang tiep bang gain
 ae.e = 200.0
 assert ae.step(img(30, 0.0)) == 200                          # tran = e_max + G_MAX
-assert ae.split(80.0) == (80, 0) and ae.split(130.0) == (100, 30)   # exposure truoc, gain sau
+assert ae.split(80.0) == (80, 1) and ae.split(130.0) == (100, 30)   # exposure truoc, gain sau
+assert ae.split(100.3) == (100, 1)                           # bay 27/10: gain 0 = XC-TECH tu chinh gain -> trang
 print("OK")

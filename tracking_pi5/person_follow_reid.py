@@ -719,6 +719,28 @@ def main(a):
 
 
 
+# Chan drone (den quan bang do) nam co dinh trong khung camera nhin xuong; detect COCO nhan
+# thanh PERSON 0,4-0,6 (bay that 27/10/2026, bam ca 2 phut). Chuan hoa [x1,y1,x2,y2] tren khung
+# GOC zoom 1, do tu video tablet. Doi cho gan camera / chan thi do lai.
+LEG_ZONES = np.array([[0.00, 0.25, 0.18, 1.00],    # chan trai
+                      [0.75, 0.35, 0.90, 1.00]])   # chan phai
+
+
+def on_legs(dets, shape, zoom=1.0):
+    """Hop nguoi >= 60% nam trong vung chan VA cham mep duoi khung (chan luon cham mep duoi).
+
+    ponytail: nguoi that dung ngay duoi drone, trong dai mep, cham mep duoi cung bi bo;
+    can hon thi loc theo hop dung yen khi drone dang di chuyen.
+    """
+    h, w = shape[:2]
+    z = np.clip((LEG_ZONES - 0.5) * zoom + 0.5, 0, 1) * [w, h, w, h]   # zoom = cat GIUA 1/zoom
+    b = dets[:, None, :4]
+    iw = (np.minimum(b[..., 2], z[:, 2]) - np.maximum(b[..., 0], z[:, 0])).clip(0)
+    ih = (np.minimum(b[..., 3], z[:, 3]) - np.maximum(b[..., 1], z[:, 1])).clip(0)
+    area = ((b[..., 2] - b[..., 0]) * (b[..., 3] - b[..., 1])).clip(1)
+    return ((iw * ih / area).max(1) >= 0.6) & (dets[:, 3] >= 0.95 * h)
+
+
 def detect_only(a):
     """Detect and draw every person; no ReID, target lock, or ROS commands."""
     detector = Detector(a.model, a.threads)
@@ -743,6 +765,8 @@ def detect_only(a):
             # Pose: bo hop co < 4 khop ro - model hay ra hop chi om CANH TAY nguoi ngoi
             # sat camera (3 khop). 90 khung that: dem dung 96% vs 19%, khong mat nguoi xa.
             dets = dets[(dets[:, 6:].reshape(len(dets), -1, 3)[:, :, 2] > 0.5).sum(1) >= 4]
+        if len(dets):
+            dets = dets[~on_legs(dets, frame.shape, getattr(cap, "zoom", 1.0))]   # GstCap co .zoom
         live = ids_tracker.update(dets)
         STATS["persons"] = len(live)
         for t in live:
@@ -885,6 +909,14 @@ def selftest():
     _tune_for_fps(3.6, _Trk(), TargetTracker(), Sticky("NONE", 3), cf36, deque(maxlen=1))
     assert abs(cf22.a - CENTER_OFFSET_EMA) < 0.02, cf22.a   # 22 fps = mốc gốc, phải ra 0.9
     assert cf36.a < 0.6, cf36.a                             # nhịp chậm -> lọc phải nhẹ đi
+
+    # --- chan drone: hop that do tu video bay 27/10 (khung 1280x720) ---
+    d = np.array([[970, 271, 1141, 720, .58, 0],            # chan phai, PERSON 0.58
+                  [8, 202, 228, 718, .41, 0],               # chan trai, PERSON 0.41
+                  [600, 300, 700, 600, .7, 0],              # nguoi giua khung
+                  [20, 300, 200, 650, .7, 0]], float)       # trong dai chan nhung KHONG cham mep duoi
+    assert on_legs(d, (720, 1280)).tolist() == [True, True, False, False]
+    assert not on_legs(d[:2], (720, 1280), zoom=2.0).any()  # zoom 2: chan ra ngoai khung cat
 
     print("selftest ok")
 

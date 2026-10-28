@@ -15,6 +15,9 @@ Environment=CYCLONEDDS_URI=file:///home/robomango/jetson/cyclonedds_tailscale.xm
 #    do bridge bat/huy theo nut task tren GUI.
 #  - ros2_bridge.py (chep tu GUI_NATIVE/tools): --spawn + tham so drone that, xem fire_mission_real.yaml.
 # MAVROS giu cong USB: script pymavlink doc FC phai dung service nay truoc.
+# 29/10/2026: cho tailscale0 co IP nhu mjpeg-stream (boot 28/10: MAVROS chet 146 lan trong ~10 phut).
+ExecStartPre=/bin/sh -c 'until ip -4 addr show dev tailscale0 2>/dev/null | grep -q inet; do sleep 2; done'
+TimeoutStartSec=infinity
 ExecStart=/bin/bash -c "source /opt/ros/humble/setup.bash; source /home/robomango/Firefighting-drone/install/setup.bash; \
     ros2 launch fire_drone mavros.launch.py \
       fcu_url:=/dev/serial/by-id/usb-Holybro_Pixhawk6C_48003C000F51333337383131-if00:115200 \

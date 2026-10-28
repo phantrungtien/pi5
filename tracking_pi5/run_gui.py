@@ -529,9 +529,16 @@ class HighlightAE:
       chay > CLIP_HI va median du -> toi di
       chay < CLIP_LO              -> sang len (con du cho, lay them chi tiet vung toi)
     Tran e_max (100 = 10 ms) chong nhoe chuyen dong; auto chon ~15,6 ms trong phong.
+    San e_min 1 (100 us) = min cua XC-TECH 4K; do 29/10 gain 100: e 10/5/1 -> median 70/45/11.
     Mot bien "muc sang" self.e: e_min..e_max la exposure, phan vuot e_max la gain (0..G_MAX)
     -> toi thi dai exposure truoc roi moi tang gain (nhieu); sang thi ha gain truoc.
     Do 15/10/2026 chieu: phong toi hon, e_max 100 gain 0 chi ra median ~36 -> can gain.
+
+    GAIN KHONG BAO GIO = 0: tren XC-TECH 4K gain 0 = camera TU chinh gain, va no san lung
+    (do 29/10 phong toi, e 50: gain 1 -> median 40 deu; gain 0 -> 170..250 nhay, co khung
+    trang 250). Bay that 27/10 08:24 nang: AE ha xuong duoi e_max -> gain 0 -> video trang/toi
+    xen ke chu ky ~1 s (2 nhip AE) suot 8 phut. Trong phong AE luon o e_max + gain >0 nen
+    khong lo. San gain = 1.
 
     Moi RESEND lan gui lai ca bon gia tri: camera bi rut/cam lai thi ve mac dinh (auto),
     khong gui lai thi AE chinh vao khoang khong.
@@ -540,11 +547,11 @@ class HighlightAE:
     # (15/10/2026) toi qua -> bong den sang giua nen toi bi model lua bat thanh "lua".
     CLIP_HI, CLIP_LO, MED_MIN, STEP, PERIOD, G_MAX, RESEND = 0.02, 0.008, 95, 1.15, 0.5, 100, 20
 
-    def __init__(self, device, cap_ref, e_max, e_min=3):
+    def __init__(self, device, cap_ref, e_max, e_min=1):
         self.dev, self.cap_ref, self.e_max, self.e_min = device, cap_ref, e_max, e_min
         self.e = e_max                           # ghi camera o khung dau trong _loop, KHONG o day
         threading.Thread(target=self._loop, daemon=True).start()
-        print(f"[ae] uu tien vung sang, exposure {e_min}..{e_max} (x100 us) + gain 0..{self.G_MAX}",
+        print(f"[ae] uu tien vung sang, exposure {e_min}..{e_max} (x100 us) + gain 1..{self.G_MAX}",
               flush=True)
 
     def _set(self, **ctrls):
@@ -568,7 +575,7 @@ class HighlightAE:
     def split(self, level=None):
         """muc sang -> (exposure, gain) nguyen."""
         level = self.e if level is None else level
-        return round(min(level, self.e_max)), round(max(0.0, level - self.e_max))
+        return round(min(level, self.e_max)), max(1, round(level - self.e_max))   # gain 0 = auto, xem docstring
 
     def _loop(self):
         n = 0

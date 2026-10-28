@@ -48,6 +48,11 @@ ExecStartPre=+/bin/sh -c 'V=/sys/class/devfreq/15340000.vic; cat $V/max_freq > $
 # p90 25 ms, 27 fps (do --stamp). Ghim GPU max -> 22/29 ms, cho p90 3 ms, 29,8 fps; ~10 W,
 # 62 C, 0 su kien oc trong 30 s. Quay lai oc3 nhu 11/10 thi bo dong nay.
 ExecStartPre=+/bin/sh -c 'G=/sys/class/devfreq/17000000.gpu; cat $G/max_freq > $G/min_freq'
+# 29/10/2026: CycloneDDS ghim tailscale0. Boot 28/10 22:29: tailscale0 ~10 phut moi co IP (4G),
+# run_gui len truoc -> "tailscale0: does not match an available interface" -> KHONG tao node,
+# khong thu lai -> /fire/detections 0 publisher ca phien. Cho tailscale0 co IPv4 roi moi chay.
+ExecStartPre=/bin/sh -c 'until ip -4 addr show dev tailscale0 2>/dev/null | grep -q inet; do sleep 2; done'
+TimeoutStartSec=infinity
 # 23/10/2026: source them ~/Firefighting-drone (fire_drone): ground_range chay TRONG run_gui (an
 # nhanh xam toan canh, khong qua DDS), /fire/zoom doi vung cat luc dang bay, hop lua ->
 # /fire/detections cho fire_locator. Thieu workspace thi van stream, chi khong do mat dat.
