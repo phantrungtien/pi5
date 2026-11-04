@@ -504,14 +504,19 @@ class H264Out:
         # --h264-ir: intra-refresh = lam moi dan tung cot trong 30 khung thay IDR moi giay, VBV
         # 100 ms. Do 27/10 (testsrc 960x540 900k): khung lon nhat 13,6 -> 8,7 KB, khong con cuc
         # IDR don len 4G. Vao giua luong cham hon ~1 s (doi SPS + het mot vong lam moi).
-        ir = ["-intra-refresh", "1"] if self.ir else []
+        # 04/11/2026: IDR moi 1 s THEO DONG HO (t = timestamp that) thay vi chi -g 30 khung. Bay
+        # 29/10: dong co chay -> camera bo khung hong, con 2-5 Hz -> -g 30 = IDR moi 6-15 s, tablet
+        # mat hinh ca chuc giay sau moi lan dut. 30 fps thi y nhu cu (-g 30 cung = 1 s).
+        # -g 90 chi con la tran: -g 30 + ep 1 s lech nhau vai ms -> 2 IDR cach 0,04 s (do 30 fps).
+        gop = (["-intra-refresh", "1", "-g", "30"] if self.ir
+               else ["-force_key_frames", "expr:gte(t,n_forced*1)", "-g", "90"])
         vbv = f"{self.kbps // 10}k" if self.ir else br
         self.p = subprocess.Popen(
             ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "rawvideo",
              "-pix_fmt", "bgr24", "-s", f"{w}x{h}", "-use_wallclock_as_timestamps", "1",
              "-i", "-", "-c:v", "libx264", "-preset", self.preset, "-tune", "zerolatency",
-             "-pix_fmt", "yuv420p", "-b:v", br, "-maxrate", br, "-bufsize", vbv, *ir,
-             "-g", "30", "-threads", "2", "-vsync", "passthrough",  # ffmpeg 4.4 (22.04): chua co -fps_mode
+             "-pix_fmt", "yuv420p", "-b:v", br, "-maxrate", br, "-bufsize", vbv, *gop,
+             "-threads", "2", "-vsync", "passthrough",  # ffmpeg 4.4 (22.04): chua co -fps_mode
              # muxdelay mac dinh 0.7 s: TS giu goi lai -> tre ~680 ms (do). Tat thi ~1 khung.
              "-muxdelay", "0", "-muxpreload", "0", "-flush_packets", "1",
              # PES video mac dinh khong ghi do dai -> demux tram phai doi goi KHUNG SAU moi
