@@ -51,8 +51,8 @@ ExecStartPre=+/bin/sh -c 'G=/sys/class/devfreq/17000000.gpu; cat $G/max_freq > $
 # 29/10/2026: CycloneDDS ghim tailscale0. Boot 28/10 22:29: tailscale0 ~10 phut moi co IP (4G),
 # run_gui len truoc -> "tailscale0: does not match an available interface" -> KHONG tao node,
 # khong thu lai -> /fire/detections 0 publisher ca phien. Cho tailscale0 co IPv4 roi moi chay.
-ExecStartPre=/bin/sh -c 'until ip -4 addr show dev tailscale0 2>/dev/null | grep -q inet; do sleep 2; done'
-TimeoutStartSec=infinity
+# 04/11/2026: cho toi da 60 s trong dds_env.sh, het thi DDS noi bo (lo) -> lua van toi fire_locator
+# khi 4G cam muon/mat song. Video H.264 thi van can Tailscale (dich 100.96.37.111).
 # 23/10/2026: source them ~/Firefighting-drone (fire_drone): ground_range chay TRONG run_gui (an
 # nhanh xam toan canh, khong qua DDS), /fire/zoom doi vung cat luc dang bay, hop lua ->
 # /fire/detections cho fire_locator. Thieu workspace thi van stream, chi khong do mat dat.
@@ -62,7 +62,7 @@ TimeoutStartSec=infinity
 # trang thai LUC MOI CAP DIEN (auto_exposure 0, exposure 78). Da ghi Manual (vd chay --hl-ae) thi
 # ket Manual toi khi RUT DIEN camera (authorized 0/1 khong du). Do 29/10 phong toi: ro den -> median
 # giu ~150; che/bo che -> trang 1 khung roi ve ~150 sau ~1,5 s. Bo --stamp (chi de do tre).
-ExecStart=/bin/bash -c "source /opt/ros/humble/setup.bash; source /home/robomango/Firefighting-drone/install/setup.bash; cd /home/robomango/jetson/tracking_pi5; \
+ExecStart=/bin/bash -c "source /opt/ros/humble/setup.bash; source /home/robomango/jetson/dds_env.sh; source /home/robomango/Firefighting-drone/install/setup.bash; cd /home/robomango/jetson/tracking_pi5; \
     exec python3 -u run_gui.py --detect-only --device auto \
       --width 1280 --height 720 --cam-width 3840 --cam-height 2160 --fps 30 --quality 80 --stream-every 1 \
       --model yolo11n-960x544-raw.onnx --conf 0.3 --threads 3 \
@@ -97,7 +97,7 @@ ExecStart=/bin/bash -c "source /opt/ros/humble/setup.bash; source /home/robomang
 # So nguoi ra ROS 2 /vision/person_count (std_msgs/Int32) qua Tailscale - xem
 # cyclonedds_tailscale.xml. Tram mat dat phai dat CUNG hai bien nay moi thay topic.
 Environment=RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-Environment=CYCLONEDDS_URI=file:///home/robomango/jetson/cyclonedds_tailscale.xml
+# CYCLONEDDS_URI: dds_env.sh chon (tailscale hoac noi bo lo), dung chung voi drone-ros.
 User=robomango
 SupplementaryGroups=video
 Restart=always

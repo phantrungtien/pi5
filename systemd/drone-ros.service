@@ -7,7 +7,7 @@ Wants=network-online.target
 User=robomango
 # Cung RMW/CycloneDDS voi mjpeg-stream.service, khong thi khong thay /fire/detections cua run_gui.
 Environment=RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-Environment=CYCLONEDDS_URI=file:///home/robomango/jetson/cyclonedds_tailscale.xml
+# CYCLONEDDS_URI: dds_env.sh chon (tailscale hoac noi bo lo), dung chung voi mjpeg-stream.
 # 27/10/2026: ba tien trinh trong mot unit, `wait -n`: mot cai chet = ca nhom khoi dong lai sau 5 s.
 #  - MAVROS: Pixhawk 6C qua USB (by-id, khong phu thuoc ttyACM0/1). gcs_url day MAVLink toi tablet
 #    qua Tailscale (duong "mang" cua profile dien thoai, conn2 udpin 14550).
@@ -15,10 +15,9 @@ Environment=CYCLONEDDS_URI=file:///home/robomango/jetson/cyclonedds_tailscale.xm
 #    do bridge bat/huy theo nut task tren GUI.
 #  - ros2_bridge.py (chep tu GUI_NATIVE/tools): --spawn + tham so drone that, xem fire_mission_real.yaml.
 # MAVROS giu cong USB: script pymavlink doc FC phai dung service nay truoc.
-# 29/10/2026: cho tailscale0 co IP nhu mjpeg-stream (boot 28/10: MAVROS chet 146 lan trong ~10 phut).
-ExecStartPre=/bin/sh -c 'until ip -4 addr show dev tailscale0 2>/dev/null | grep -q inet; do sleep 2; done'
-TimeoutStartSec=infinity
-ExecStart=/bin/bash -c "source /opt/ros/humble/setup.bash; source /home/robomango/Firefighting-drone/install/setup.bash; \
+# 29/10/2026: cho tailscale0 co IP (boot 28/10: MAVROS chet 146 lan trong ~10 phut).
+# 04/11/2026: cho toi da 60 s trong dds_env.sh, het thi DDS noi bo -> MAVROS khong con phu thuoc 4G.
+ExecStart=/bin/bash -c "source /opt/ros/humble/setup.bash; source /home/robomango/jetson/dds_env.sh; source /home/robomango/Firefighting-drone/install/setup.bash; \
     ros2 launch fire_drone mavros.launch.py \
       fcu_url:=/dev/serial/by-id/usb-Holybro_Pixhawk6C_48003C000F51333337383131-if00:115200 \
       gcs_url:=udp://@100.96.37.111:14550 & \
