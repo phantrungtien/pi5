@@ -1,0 +1,15 @@
+/mavros/optical_flow:
+  ros__parameters:
+    frame_id: optical_flow
+    qos_overrides:
+      /parameter_events:
+        publisher:
+          depth: 1000
+          durability: volatile
+          history: keep_last
+          reliability: reliable
+    ranger_fov: 0.119428926
+    ranger_max_range: 5.0
+    ranger_min_range: 0.3
+    use_sim_time: false
+

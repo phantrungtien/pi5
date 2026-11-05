@@ -1,0 +1,34 @@
+/mavros/fake_gps:
+  ros__parameters:
+    eph: 2.0
+    epv: 2.0
+    fix_type: 3
+    geo_origin:
+      alt: 408.0
+      lat: 47.3667
+      lon: 8.55
+    gps_id: 4
+    gps_rate: 5.0
+    horiz_accuracy: 0.5
+    mocap_transform: false
+    mocap_withcovariance: false
+    qos_overrides:
+      /parameter_events:
+        publisher:
+          depth: 1000
+          durability: volatile
+          history: keep_last
+          reliability: reliable
+    satellites_visible: 6
+    speed_accuracy: 0.0
+    tf:
+      child_frame_id: fix
+      frame_id: map
+      listen: false
+      rate_limit: 10.0
+    use_hil_gps: true
+    use_mocap: true
+    use_sim_time: false
+    use_vision: false
+    vert_accuracy: 0.5
+

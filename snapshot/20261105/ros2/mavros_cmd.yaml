@@ -1,0 +1,13 @@
+/mavros/cmd:
+  ros__parameters:
+    command_ack_timeout: 5.0
+    qos_overrides:
+      /parameter_events:
+        publisher:
+          depth: 1000
+          durability: volatile
+          history: keep_last
+          reliability: reliable
+    use_comp_id_system_control: false
+    use_sim_time: false
+

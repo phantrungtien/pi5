@@ -1,0 +1,17 @@
+/mavros/mount_control:
+  ros__parameters:
+    debounce_s: 4.0
+    disable_diag: false
+    err_threshold_deg: 10.0
+    negate_measured_pitch: false
+    negate_measured_roll: false
+    negate_measured_yaw: false
+    qos_overrides:
+      /parameter_events:
+        publisher:
+          depth: 1000
+          durability: volatile
+          history: keep_last
+          reliability: reliable
+    use_sim_time: false
+

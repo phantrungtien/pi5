@@ -1,0 +1,15 @@
+/mavros/odometry:
+  ros__parameters:
+    fcu:
+      map_id_des: map
+      odom_child_id_des: map
+      odom_parent_id_des: map
+    qos_overrides:
+      /parameter_events:
+        publisher:
+          depth: 1000
+          durability: volatile
+          history: keep_last
+          reliability: reliable
+    use_sim_time: false
+

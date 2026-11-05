@@ -1,0 +1,12 @@
+/mavros/setpoint_accel:
+  ros__parameters:
+    qos_overrides:
+      /parameter_events:
+        publisher:
+          depth: 1000
+          durability: volatile
+          history: keep_last
+          reliability: reliable
+    send_force: false
+    use_sim_time: false
+

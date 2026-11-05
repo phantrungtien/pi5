@@ -1,0 +1,18 @@
+/mavros_node:
+  ros__parameters:
+    base_link_frame: ''
+    fcu_url: /dev/serial/by-id/usb-Holybro_Pixhawk6C_48003C000F51333337383131-if00:115200
+    gcs_url: udp://@100.96.37.111:14550
+    map_frame: ''
+    odom_frame: ''
+    qos_overrides:
+      /parameter_events:
+        publisher:
+          depth: 1000
+          durability: volatile
+          history: keep_last
+          reliability: reliable
+    tgt_component: 1
+    tgt_system: 1
+    use_sim_time: false
+

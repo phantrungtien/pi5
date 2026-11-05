@@ -1,0 +1,16 @@
+/mavros/imu:
+  ros__parameters:
+    angular_velocity_stdev: 0.0003490659
+    frame_id: base_link
+    linear_acceleration_stdev: 0.0003
+    magnetic_stdev: 0.0
+    orientation_stdev: 1.0
+    qos_overrides:
+      /parameter_events:
+        publisher:
+          depth: 1000
+          durability: volatile
+          history: keep_last
+          reliability: reliable
+    use_sim_time: false
+

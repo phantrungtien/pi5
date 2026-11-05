@@ -1,0 +1,50 @@
+/mavros:
+  ros__parameters:
+    base_link_frame_id: base_link
+    component_id: 191
+    diagnostic_updater:
+      period: 1.0
+      use_fqn: false
+    fcu_protocol: v2.0
+    map_frame_id: map
+    odom_frame_id: odom
+    plugin_allowlist: []
+    plugin_denylist:
+    - param
+    - rallypoint
+    - waypoint
+    - geofence
+    - actuator_control
+    - ftp
+    - hil
+    - altitude
+    - debug_value
+    - image_pub
+    - px4flow
+    - vibration
+    - vision_speed_estimate
+    - wheel_odometry
+    qos_overrides:
+      /parameter_events:
+        publisher:
+          depth: 1000
+          durability: volatile
+          history: keep_last
+          reliability: reliable
+      /tf:
+        publisher:
+          depth: 100
+          durability: volatile
+          history: keep_last
+          reliability: reliable
+      /tf_static:
+        publisher:
+          depth: 1
+          history: keep_last
+          reliability: reliable
+    system_id: 1
+    target_component_id: 1
+    target_system_id: 1
+    uas_url: /uas1
+    use_sim_time: false
+

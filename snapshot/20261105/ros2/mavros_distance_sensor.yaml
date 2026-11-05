@@ -1,0 +1,17 @@
+/mavros/distance_sensor:
+  ros__parameters:
+    base_frame_id: base_link
+    config: "rangefinder_pub:\n  id: 0\n  frame_id: \"lidar\"\n  # orientation: PITCH_270\
+      \  # sended by FCU\n  field_of_view: 0.0        # XXX TODO\n  send_tf: false\n\
+      \  sensor_position: {x:  0.0, y:  0.0, z:  -0.1}\nrangefinder_sub:\n  subscriber:\
+      \ true\n  id: 1\n  orientation: PITCH_270  # only that orientation are supported\
+      \ by APM 3.4+\n"
+    qos_overrides:
+      /parameter_events:
+        publisher:
+          depth: 1000
+          durability: volatile
+          history: keep_last
+          reliability: reliable
+    use_sim_time: false
+

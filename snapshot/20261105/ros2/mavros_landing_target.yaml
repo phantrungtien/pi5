@@ -1,0 +1,31 @@
+/mavros/landing_target:
+  ros__parameters:
+    camera:
+      focal_length: 2.8
+      fov_x: 2.0071286398
+      fov_y: 2.0071286398
+    frame_id: landing_target_1
+    image:
+      height: 480
+      width: 640
+    land_target_type: VISION_FIDUCIAL
+    listen_lt: false
+    mav_frame: LOCAL_NED
+    qos_overrides:
+      /parameter_events:
+        publisher:
+          depth: 1000
+          durability: volatile
+          history: keep_last
+          reliability: reliable
+    target_size:
+      x: 0.3
+      y: 0.3
+    tf:
+      child_frame_id: camera_center
+      frame_id: landing_target
+      listen: false
+      rate_limit: 10.0
+      send: true
+    use_sim_time: false
+

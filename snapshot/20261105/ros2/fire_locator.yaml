@@ -1,0 +1,12 @@
+/fire_locator:
+  ros__parameters:
+    calib: ''
+    camera_offset:
+    - 0.2
+    - 0.0
+    - -0.02
+    confirm_frames: 5
+    min_score: 0.2
+    use_sim_time: false
+    window: 20
+

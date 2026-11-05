@@ -1,0 +1,15 @@
+/mavros/gimbal_control:
+  ros__parameters:
+    frame_id: base_link_frd
+    qos_overrides:
+      /parameter_events:
+        publisher:
+          depth: 1000
+          durability: volatile
+          history: keep_last
+          reliability: reliable
+    tf:
+      frame_id: base_link_frd
+      send: false
+    use_sim_time: false
+

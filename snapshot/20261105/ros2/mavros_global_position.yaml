@@ -1,0 +1,21 @@
+/mavros/global_position:
+  ros__parameters:
+    child_frame_id: base_link
+    frame_id: map
+    gps_uere: 1.0
+    qos_overrides:
+      /parameter_events:
+        publisher:
+          depth: 1000
+          durability: volatile
+          history: keep_last
+          reliability: reliable
+    rot_covariance: 99999.0
+    tf:
+      child_frame_id: base_link
+      frame_id: map
+      global_frame_id: earth
+      send: false
+    use_relative_alt: true
+    use_sim_time: false
+

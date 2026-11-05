@@ -1,0 +1,24 @@
+/mavros/time:
+  ros__parameters:
+    convergence_window: 500
+    max_consecutive_high_deviation: 10
+    max_consecutive_high_rtt: 10
+    max_deviation_sample: 10
+    max_rtt_sample: 10
+    qos_overrides:
+      /parameter_events:
+        publisher:
+          depth: 1000
+          durability: volatile
+          history: keep_last
+          reliability: reliable
+    system_time_rate: 1.0
+    time_ref_source: fcu
+    timesync_alpha_final: 0.003
+    timesync_alpha_initial: 0.05
+    timesync_beta_final: 0.003
+    timesync_beta_initial: 0.05
+    timesync_mode: MAVLINK
+    timesync_rate: 10.0
+    use_sim_time: false
+

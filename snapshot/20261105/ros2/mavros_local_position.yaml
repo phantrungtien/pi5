@@ -1,0 +1,16 @@
+/mavros/local_position:
+  ros__parameters:
+    frame_id: map
+    qos_overrides:
+      /parameter_events:
+        publisher:
+          depth: 1000
+          durability: volatile
+          history: keep_last
+          reliability: reliable
+    tf:
+      child_frame_id: base_link
+      frame_id: map
+      send: true
+    use_sim_time: false
+

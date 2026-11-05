@@ -1,0 +1,20 @@
+/mavros_router:
+  ros__parameters:
+    diagnostic_updater:
+      period: 5.0
+      use_fqn: false
+    fcu_urls:
+    - /dev/serial/by-id/usb-Holybro_Pixhawk6C_48003C000F51333337383131-if00:115200
+    gcs_urls:
+    - udp://@100.96.37.111:14550
+    qos_overrides:
+      /parameter_events:
+        publisher:
+          depth: 1000
+          durability: volatile
+          history: keep_last
+          reliability: reliable
+    uas_urls:
+    - /uas1
+    use_sim_time: false
+
