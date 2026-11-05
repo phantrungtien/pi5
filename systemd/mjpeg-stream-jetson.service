@@ -66,7 +66,7 @@ ExecStart=/bin/bash -c "source /opt/ros/humble/setup.bash; source /home/robomang
     exec python3 -u run_gui.py --detect-only --device auto \
       --width 1280 --height 720 --cam-width 3840 --cam-height 2160 --fps 30 --quality 80 --stream-every 1 \
       --model yolo11n-960x544-raw.onnx --conf 0.3 --threads 3 \
-      --stream-width 960 --h264 100.96.37.111:5600 --h264-kbps 900 --h264-fb-port 5601 --h264-kbps-min 900 --no-mjpeg \
+      --stream-width 1280 --h264 100.96.37.111:5600 --h264-kbps 1200 --h264-fb-port 5601 --h264-kbps-min 1200 --no-mjpeg \
       --fire-model /home/robomango/phantrungtien-fire-detection/models/best_nano_111_640.onnx \
       --fire-conf 0.2 --fire-threads 1 --fire-hz 5 \
       --fire-verify /home/robomango/jetson/hidden-lyceum-473116-p8-1f580efa4c6d.json --fire-scan 3"
@@ -81,6 +81,7 @@ ExecStart=/bin/bash -c "source /opt/ros/humble/setup.bash; source /home/robomang
 # 26/10 23:25 --stream-width 960 + 900 kbps: chi video nho lai (YOLO/lua/dinh vi van 1280x720). Tre that
 # qua relay sin p50 ~300 ms, giat 1-2 s khi DERP chap chon -> it bit hon de bot don goi 4G. 960x540
 # 900 kbps ~ 1280x720 1600 kbps tinh theo diem anh.
+# 05/11 peer relay VPS (55 ms) thay DERP -> 1280x720 1200 kbps (960/900 bi mo; 1400 net hon nhung lag qua 4G). Mat goi/giat -> quay lai .bak-960-900.
 # 27/10 da thu --h264-ir (intra-refresh, VBV 100 ms) cho mat 1-4% goi qua peer relay: tablet Lenovo
 # (QMediaPlayer/MediaCodec) 0 fps suot 2 phut, mo lai moi 5 s - khong bat dau giai ma khi khong co IDR.
 # Mat goi van 1,4-5% (khong phai do cuc IDR). KHONG bat lai neu tram chua doi player.
