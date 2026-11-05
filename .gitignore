@@ -28,3 +28,6 @@ hidden-lyceum-*.json
 
 # Cong tac che do anh lua in (run_gui._PictureFlag): touch de bat khi thu to A0, rm de tat.
 fire_picture
+
+# Log DataFlash tai tu FC bang flight_logs/fc_logs.py: nang (10+ MB), khong commit.
+flight_logs/*.BIN
