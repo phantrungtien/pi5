@@ -245,7 +245,9 @@ class _FireRos:
         self.ex.add_node(self.node)
         try:
             from fire_drone.ground_range import GroundRange
-            self.gr = GroundRange()
+            from rclpy.parameter import Parameter
+            # camera_dz = z cua --cam-offset (that -0.02); mac dinh cua node la -0.18 cua sim -> lech ~16 cm mat dat
+            self.gr = GroundRange(parameter_overrides=[Parameter("camera_dz", value=float(cam_off[2]))])
             self.ex.add_node(self.gr)
         except ImportError as e:
             self.gr = None
@@ -278,7 +280,7 @@ class _FireRos:
             print(f"[drop] KHONG ve vach ngam: {type(e).__name__}: {e}", flush=True)
         threading.Thread(target=self._loop, daemon=True).start()
         print("[ROS] /fire/zoom -> camera, lua -> /fire/detections"
-              + (", ground_range trong tien trinh" if self.gr else ""), flush=True)
+              + (f", ground_range trong tien trinh (camera_dz {self.gr.cam_dz:g})" if self.gr else ""), flush=True)
 
     def _cap(self):
         return self.cap_ref[0] if self.cap_ref else None
