@@ -399,41 +399,58 @@ class _FireRos:
 
 
 class Recorder:
-    """Ghi NGUYEN luong MPEG-TS dang phat (da ve hop detect + HUD + vach ngam) ra DIR/*.ts.
+    """Ghi luong MPEG-TS dang phat (da ve hop detect + HUD + vach ngam) ra DIR/*.ts.
     Khong nen them lan nao: Orin Nano khong co bo nen phan cung, x264 thu 2 = them ~1 nhan.
     Chat luong = chat luong tram mat dat dang xem (bitrate tu ha khi 4G mat goi thi file cung ha).
+
+    Di qua `ffmpeg -c copy` (khong nen lai, ~0 CPU) de GAN LAI dau thoi gian theo luc goi toi. Luong
+    phat co ~19% khung cach nhau 1 tick (rawvideo mac dinh 25 fps, camera ~31 fps), va MOI lan H264Out
+    doi bitrate (4G mat goi) ffmpeg khoi dong lai -> PTS ve 0 giua file. Ghi tho thi Windows khong mo
+    (07/11/2026). ponytail: goi don dong (khoi dau file, sau ROTATE) van co vai khung dau sat nhau, va
+    khung cuoi (bi cat do luc ngat) dung hinh ~SYNC s o cuoi file.
 
     Ghi tu luc service chay (bat nguon Jetson) toi luc HA CANH = DISARM sau khi da ARM; ARM lai
     -> file moi. Khoi dong: xoa file cu hon KEEP_DAYS. Moi ROTATE s sang file moi (bat ca ngay
     tren ban khong ra 1 file 20 GB); dia con < MIN_FREE thi xoa file cu nhat truoc khi mo file moi.
-    fsync moi SYNC s o luong rieng: rut pin / roi thi mat toi da ~SYNC s cuoi, khong phai 30 s
-    page cache (doan quy nhat chinh la luc roi). Ghi loi (dia day...) thi bo ghi, KHONG anh huong video.
+    fsync moi SYNC s: rut pin / roi thi mat ~vai s cuoi, khong phai 30 s page cache (doan quy nhat
+    chinh la luc roi). MOT luong rieng lam het viec ghi; _fanout chi put_nowait (hang day thi bo goi),
+    nen ffmpeg / dia cham hay loi KHONG lam tre hay mat video phat.
     """
-    KEEP_DAYS, ROTATE, MIN_FREE, SYNC = 3, 1800, 5 << 30, 2.0
+    KEEP_DAYS, ROTATE, MIN_FREE, SYNC, QMAX, RETRY = 3, 1800, 5 << 30, 2.0, 2000, 10.0
 
     def __init__(self, d, armed):
+        import queue
         self.d, self.armed = d, armed            # armed() -> bool: trang thai MAVROS
         os.makedirs(d, exist_ok=True)
         cut = time.time() - self.KEEP_DAYS * 86400
         old = [f for f in self._files() if os.path.getmtime(f) < cut]
         for f in old:
             os.remove(f)
-        self.f, self.t0, self.flew, self.err = None, 0.0, False, False
-        self.lock = threading.Lock()
-        threading.Thread(target=self._sync, daemon=True).start()
+        self.q, self.Full, self.Empty = queue.Queue(self.QMAX), queue.Full, queue.Empty
+        self.on = self.flew = False
+        self.p = self.f = None
+        self.t0 = self.retry = 0.0
+        self.dropped = 0
+        threading.Thread(target=self._writer, daemon=True).start()
         print(f"[rec] ghi video -> {d} (xoa {len(old)} file > {self.KEEP_DAYS} ngay)", flush=True)
 
     def _files(self):
         return sorted(os.path.join(self.d, f) for f in os.listdir(self.d) if f.endswith(".ts"))
 
-    def _close(self):
-        if self.f:
+    def write(self, pkt):
+        """Goi tu _fanout - khong bao gio chan."""
+        armed = self.armed()
+        self.flew |= armed
+        on = armed or not self.flew              # da bay roi va dang disarm = vua ha canh
+        if on != self.on:
+            self.on = on
+            if not on:
+                print("[rec] ha canh -> dung ghi (ARM lai thi ghi file moi)", flush=True)
+        if on:
             try:
-                os.fsync(self.f.fileno())
-            except OSError:
-                pass
-            self.f.close()
-            self.f = None
+                self.q.put_nowait(pkt)
+            except self.Full:
+                self.dropped += 1
 
     def _open(self):
         self._close()
@@ -442,39 +459,59 @@ class Recorder:
             print(f"[rec] dia sap day -> xoa {files[0]}", flush=True)
             os.remove(files.pop(0))
         path = os.path.join(self.d, time.strftime("%Y%m%d_%H%M%S.ts"))
-        self.f, self.t0 = open(path, "ab", buffering=0), time.monotonic()
+        self.f = open(path, "wb")
+        self.p = subprocess.Popen(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-use_wallclock_as_timestamps", "1",
+             "-f", "mpegts", "-i", "pipe:0", "-c", "copy", "-flush_packets", "1", "-f", "mpegts", "pipe:1"],
+            stdin=subprocess.PIPE, stdout=self.f)
+        self.t0 = time.monotonic()
         print(f"[rec] file moi {path}", flush=True)
 
-    def write(self, pkt):
-        armed = self.armed()
-        self.flew |= armed
-        with self.lock:
-            if not (armed or not self.flew):     # da bay roi va dang disarm = vua ha canh
-                if self.f:
-                    self._close()
-                    print("[rec] ha canh -> dung ghi (ARM lai thi ghi file moi)", flush=True)
-                return
-            if self.err:
-                return
+    def _close(self):
+        if self.p:
             try:
-                if self.f is None or time.monotonic() - self.t0 > self.ROTATE:
-                    self._open()
-                self.f.write(pkt)
-            except OSError as e:
-                self.err = True
-                print(f"[rec] loi ghi ({e}) - tat ghi video, stream van chay", flush=True)
+                self.p.stdin.close()             # ffmpeg ghi not goi cuoi roi thoat
+                self.p.wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired):
+                self.p.kill()
+                self.p.wait()
+            self.p = None
+        if self.f:
+            try:
+                os.fsync(self.f.fileno())
+            except OSError:
+                pass
+            self.f.close()
+            self.f = None
 
-    def _sync(self):
+    def _writer(self):
+        t_sync = 0.0
         while True:
-            time.sleep(self.SYNC)
-            with self.lock:                      # dup: fsync NGOAI khoa, khong chan _fanout vai ms
-                fd = os.dup(self.f.fileno()) if self.f else None
-            if fd is not None:
+            try:
+                pkt = self.q.get(timeout=self.SYNC)
+            except self.Empty:                   # het goi: vua ha canh, hoac nguon im
+                pkt = None
+                if not self.on and self.p:
+                    self._close()
+            now = time.monotonic()
+            if self.dropped:
+                print(f"[rec] dia/ffmpeg cham -> bo {self.dropped} goi", flush=True)
+                self.dropped = 0
+            try:
+                if pkt is not None and now >= self.retry:
+                    if self.p is None or now - self.t0 > self.ROTATE:
+                        self._open()
+                    self.p.stdin.write(pkt)
+                if self.f and now - t_sync >= self.SYNC:
+                    os.fsync(self.f.fileno())
+                    t_sync = now
+            except OSError as e:                 # dia day, ffmpeg chet (BrokenPipe)...
+                print(f"[rec] loi ghi ({e}) - thu lai sau {self.RETRY:g} s, stream van chay", flush=True)
+                self.retry = now + self.RETRY
                 try:
-                    os.fsync(fd)
+                    self._close()
                 except OSError:
-                    pass
-                os.close(fd)
+                    self.p = self.f = None
 
 
 class H264Out:
