@@ -217,7 +217,7 @@ class _FireRos:
     # roi truoc vong thi tang, sau vong thi giam (chi anh huong khi drone dang troi).
     DROP_DELAY = 0.1
 
-    def __init__(self, cap_ref, calib="", cam_off=(0.20, 0.0, -0.02), cam_to_drop=0.17):
+    def __init__(self, cap_ref, calib="", cam_off=(0.20, 0.0, -0.02), cam_to_drop=0.17, cam_roll=0.0):
         import rclpy
         from rclpy.executors import SingleThreadedExecutor
         from rclpy.qos import DurabilityPolicy, QoSProfile
@@ -254,7 +254,7 @@ class _FireRos:
         self.pose = self.vel = self.rel_alt = (0.0, None)   # (gio nhan monotonic, gia tri)
         try:
             from ament_index_python.packages import get_package_share_directory
-            from fire_drone.fire_locator import ground_pixel, impact_point
+            from fire_drone.fire_locator import cam_to_body, ground_pixel, impact_point
             from fire_drone.marker_detector import calib_for, load_calib, quat_to_rot
             from geometry_msgs.msg import PoseStamped, TwistStamped
             from std_msgs.msg import Float64
@@ -263,6 +263,7 @@ class _FireRos:
                                                           "config", "drone_cam_3840x2160.yaml"))
             self.cam_off = np.array(cam_off, float)
             self.drop_off = self.cam_off - [cam_to_drop, 0.0, 0.0]
+            self.R_cam = cam_to_body(cam_roll)
             stamp = lambda name: lambda m: setattr(self, name, (time.monotonic(), m))  # noqa: E731
             self.node.create_subscription(PoseStamped, "/mavros/local_position/pose", stamp("pose"),
                                           qos_profile_sensor_data)
@@ -270,7 +271,7 @@ class _FireRos:
                                           stamp("vel"), qos_profile_sensor_data)
             self.node.create_subscription(Float64, "/mavros/global_position/rel_alt", stamp("rel_alt"),
                                           qos_profile_sensor_data)
-            print(f"[drop] vach ngam: ong kinh {list(self.cam_off)} m, tha sau ong kinh {cam_to_drop} m",
+            print(f"[drop] vach ngam: ong kinh {list(self.cam_off)} m, tha sau ong kinh {cam_to_drop} m, nghieng {cam_roll:g} do",
                   flush=True)
         except Exception as e:  # noqa: BLE001 - thieu calib/fire_drone: van stream, chi khong co vach ngam
             print(f"[drop] KHONG ve vach ngam: {type(e).__name__}: {e}", flush=True)
@@ -340,13 +341,13 @@ class _FireRos:
         if drop[2] - gz < 0.5:
             return
         hit = impact_point(drop, v, gz, self.DROP_DELAY)
-        uv = ground_pixel(hit, pos, R, self.cam_off, self._K, self._D)
+        uv = ground_pixel(hit, pos, R, self.cam_off, self._K, self._D, self.R_cam)
         if uv is None:
             return
         x, y = px(uv)
         if not (0 <= x < w and 0 <= y < h):
             return
-        edge = ground_pixel(hit + [0.5, 0.0, 0.0], pos, R, self.cam_off, self._K, self._D)
+        edge = ground_pixel(hit + [0.5, 0.0, 0.0], pos, R, self.cam_off, self._K, self._D, self.R_cam)
         r = max(6, round(np.hypot(*np.subtract(px(edge), (x, y))))) if edge is not None else 12
         mark(cv2.circle, (x, y), r, color=(255, 255, 0))
         mark(cv2.circle, (x, y), 2, color=(255, 255, 0))
@@ -700,6 +701,20 @@ GST_ZOOM = str(__import__("pathlib").Path(__file__).resolve().parent / "gst_zoom
 GRAY = (960, 540)  # nhanh xam toan canh cua gst_zoom.py, cho ground_range
 
 
+def restart_due(quiet, han, raw_age, had_frame, bad_grace=10.0):
+    """_watch co nen dung lai gst khong. quiet = bao lau chua co khung TOT, raw_age = bao lau
+    chua thay khung camera nao ke ca khung JPEG hong (gst_zoom bao qua stderr).
+
+    Bay that 29/10/2026: camera 4K USB 2.0 chung hub voi modem 4G gui ca tram khung JPEG cut
+    (7614 khung / buoi), dung lai gst 112 lan - lan nao cung ~1.5 s den them ma khung sau van
+    hong. Camera con day khung thi dung lai khong chua duoc gi: doi khung tot.
+    ponytail: chi hong ma qua `bad_grace` s thi van dung lai, phong camera ket o trang thai xau.
+    """
+    if quiet <= han:
+        return False
+    return not (had_frame and raw_age < han and quiet < bad_grace)
+
+
 class GstCap:
     """Thay cv2.VideoCapture: gst-launch -> pipe raw BGR. Luồng đọc giữ khung MỚI NHẤT.
 
@@ -736,6 +751,7 @@ class GstCap:
         # canh sat se giet gst moi giay truoc khi no kip noi — da dinh dung bay do.
         self.stale, self.restart_after, self.first_grace = stale, restart_after, first_grace
         self.frame, self.alive, self.t, self.t0 = None, True, 0.0, 0.0
+        self.t_raw = 0.0                         # khung camera cuoi, KE CA khung JPEG hong
         self._t_read = 0.0                       # dau thoi gian cua khung read() tra lan truoc
         self.p = None
         self._spawn()
@@ -755,8 +771,9 @@ class GstCap:
             self.p = subprocess.Popen(
                 [sys.executable, GST_ZOOM, dev or "/dev/null", str(self.cam_w), str(self.cam_h),
                  str(self.fps), str(self.w), str(self.h), *map(str, self._box()), str(w)],
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, pass_fds=(w,))
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, pass_fds=(w,))
             os.close(w)
+            threading.Thread(target=self._pump_err, args=(self.p,), daemon=True).start()
             self.p.gray = os.fdopen(r, "rb")
             self._send(f"gray {int(self.gray_on)}")
             threading.Thread(target=self._pump_gray, args=(self.p,), daemon=True).start()
@@ -831,6 +848,14 @@ class GstCap:
             self._send(f"gray {int(on)}")
             self._gray = None
 
+    def _pump_err(self, proc):
+        """stderr cua gst_zoom: chuyen nguyen ra journal, dong 'JPEG hong' = camera con day khung."""
+        for line in proc.stderr:
+            if b"JPEG hong" in line:
+                self.t_raw = time.monotonic()
+            sys.stderr.buffer.write(line)
+            sys.stderr.flush()
+
     def _pump_gray(self, proc):
         n = GRAY[0] * GRAY[1]
         with proc.gray as f:
@@ -886,7 +911,7 @@ class GstCap:
                 quiet, han = time.monotonic() - self.t0, self.first_grace
             if not self.dev and resolve_dev(self.want):
                 han = 0                          # dang khong co camera ma vua cam vao: mo ngay
-            if quiet <= han:
+            if not restart_due(quiet, han, time.monotonic() - self.t_raw, bool(self.t)):
                 continue
             if not self.t and self.dev:
                 # camera co ma chua ra khung nao: co the khong co MJPG dung w x h@fps -> doi che do
@@ -1073,6 +1098,9 @@ def main():
                    help="tam FC -> ong kinh, m, x truoc y trai z len (= camera_offset launch real:=true, do 27/10/2026)")
     p.add_argument("--cam-to-drop", type=float, default=0.17, metavar="M",
                    help="co cau tha nam SAU ong kinh bao nhieu m theo truc doc than (user do 29/10/2026: 170 mm)")
+    p.add_argument("--cam-roll", type=float, default=-8.2, metavar="DEG",
+                   help="camera gan nghieng quanh truc doc than (= camera_roll launch real:=true). -8.2: tha that "
+                        "29/10/2026 treo 5.5 m, bong cham dat 0.8 m TRAI vong. Am hon = vong dich trai")
     a = p.parse_args()
 
     import person_follow_reid as pf
@@ -1121,7 +1149,8 @@ def main():
     cap_ref = []                                 # `show` can hoi tuoi khung cua chinh no
     if _fire_tracker is not None and _pub_count is not None:  # _pub_count = rclpy da init duoc
         try:
-            _fire_ros = _FireRos(cap_ref, a.calib, [float(x) for x in a.cam_offset.split(",")], a.cam_to_drop)
+            _fire_ros = _FireRos(cap_ref, a.calib, [float(x) for x in a.cam_offset.split(",")], a.cam_to_drop,
+                                 a.cam_roll)
         except Exception as e:  # noqa: BLE001
             print(f"[ROS] khong tao duoc node lua ({e}) -> chi ve hop len video", flush=True)
 
