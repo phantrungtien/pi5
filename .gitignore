@@ -31,3 +31,6 @@ fire_picture
 
 # Log DataFlash tai tu FC bang flight_logs/fc_logs.py: nang (10+ MB), khong commit.
 flight_logs/*.BIN
+
+# Video ghi tu run_gui.Recorder (--record), tu xoa sau 3 ngay.
+recordings/

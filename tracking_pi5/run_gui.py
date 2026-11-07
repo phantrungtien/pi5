@@ -398,6 +398,85 @@ class _FireRos:
         self.pub.publish(msg)  # ca khi rong: fire_locator bo qua, con ros2 topic hz thay song
 
 
+class Recorder:
+    """Ghi NGUYEN luong MPEG-TS dang phat (da ve hop detect + HUD + vach ngam) ra DIR/*.ts.
+    Khong nen them lan nao: Orin Nano khong co bo nen phan cung, x264 thu 2 = them ~1 nhan.
+    Chat luong = chat luong tram mat dat dang xem (bitrate tu ha khi 4G mat goi thi file cung ha).
+
+    Ghi tu luc service chay (bat nguon Jetson) toi luc HA CANH = DISARM sau khi da ARM; ARM lai
+    -> file moi. Khoi dong: xoa file cu hon KEEP_DAYS. Moi ROTATE s sang file moi (bat ca ngay
+    tren ban khong ra 1 file 20 GB); dia con < MIN_FREE thi xoa file cu nhat truoc khi mo file moi.
+    fsync moi SYNC s o luong rieng: rut pin / roi thi mat toi da ~SYNC s cuoi, khong phai 30 s
+    page cache (doan quy nhat chinh la luc roi). Ghi loi (dia day...) thi bo ghi, KHONG anh huong video.
+    """
+    KEEP_DAYS, ROTATE, MIN_FREE, SYNC = 3, 1800, 5 << 30, 2.0
+
+    def __init__(self, d, armed):
+        self.d, self.armed = d, armed            # armed() -> bool: trang thai MAVROS
+        os.makedirs(d, exist_ok=True)
+        cut = time.time() - self.KEEP_DAYS * 86400
+        old = [f for f in self._files() if os.path.getmtime(f) < cut]
+        for f in old:
+            os.remove(f)
+        self.f, self.t0, self.flew, self.err = None, 0.0, False, False
+        self.lock = threading.Lock()
+        threading.Thread(target=self._sync, daemon=True).start()
+        print(f"[rec] ghi video -> {d} (xoa {len(old)} file > {self.KEEP_DAYS} ngay)", flush=True)
+
+    def _files(self):
+        return sorted(os.path.join(self.d, f) for f in os.listdir(self.d) if f.endswith(".ts"))
+
+    def _close(self):
+        if self.f:
+            try:
+                os.fsync(self.f.fileno())
+            except OSError:
+                pass
+            self.f.close()
+            self.f = None
+
+    def _open(self):
+        self._close()
+        files = self._files()
+        while files and __import__("shutil").disk_usage(self.d).free < self.MIN_FREE:
+            print(f"[rec] dia sap day -> xoa {files[0]}", flush=True)
+            os.remove(files.pop(0))
+        path = os.path.join(self.d, time.strftime("%Y%m%d_%H%M%S.ts"))
+        self.f, self.t0 = open(path, "ab", buffering=0), time.monotonic()
+        print(f"[rec] file moi {path}", flush=True)
+
+    def write(self, pkt):
+        armed = self.armed()
+        self.flew |= armed
+        with self.lock:
+            if not (armed or not self.flew):     # da bay roi va dang disarm = vua ha canh
+                if self.f:
+                    self._close()
+                    print("[rec] ha canh -> dung ghi (ARM lai thi ghi file moi)", flush=True)
+                return
+            if self.err:
+                return
+            try:
+                if self.f is None or time.monotonic() - self.t0 > self.ROTATE:
+                    self._open()
+                self.f.write(pkt)
+            except OSError as e:
+                self.err = True
+                print(f"[rec] loi ghi ({e}) - tat ghi video, stream van chay", flush=True)
+
+    def _sync(self):
+        while True:
+            time.sleep(self.SYNC)
+            with self.lock:                      # dup: fsync NGOAI khoa, khong chan _fanout vai ms
+                fd = os.dup(self.f.fileno()) if self.f else None
+            if fd is not None:
+                try:
+                    os.fsync(fd)
+                except OSError:
+                    pass
+                os.close(fd)
+
+
 class H264Out:
     """Nen H.264 bang x264 (CPU) va DAY MPEG-TS qua UDP toi tram mat dat.
 
@@ -422,21 +501,21 @@ class H264Out:
     DOWN_GAP, UP_AFTER, UP_STEP = 2.0, 5.0, 150
     SILENT = 5.0                       # da tung co bao cao ma im 5 s = mat het -> ha
 
-    def __init__(self, dest, kbps, preset, fb_port=0, kbps_min=400, gamma=1.0, ir=False):
+    def __init__(self, dest, kbps, preset, fb_port=0, kbps_min=400, gamma=1.0, ir=False, rec=None):
         self.dest, self.kbps, self.preset, self.ir = dest, kbps, preset, ir
         # Nhieu dich "A:5600,B:5600" (laptop + dien thoai): ffmpeg van MOT lenh nhu cu (giu
         # muxdelay/PES da do tre) nhung day vao cong noi bo, luong _fanout chep tung goi ra
         # moi dich. Ca hai tram cung bao mat goi ve fb_port -> bitrate theo tram te hon
         # (chung mot duong len 4G). ponytail: khong dung -f tee vi chua chac tuy chon mux
-        # xuong toi tung dich.
-        if "," in dest:
+        # xuong toi tung dich. rec (Recorder): cung luong _fanout ghi tung goi ra file.
+        if "," in dest or rec:
             import socket
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.bind(("127.0.0.1", 0))
             self.dest = f"127.0.0.1:{s.getsockname()[1]}"
             outs = [(socket.gethostbyname(h), int(p))
                     for h, p in (d.strip().rsplit(":", 1) for d in dest.split(","))]
-            threading.Thread(target=self._fanout, args=(s, outs), daemon=True).start()
+            threading.Thread(target=self._fanout, args=(s, outs, rec), daemon=True).start()
             print(f"[h264] chep ra {len(outs)} dich: {dest}", flush=True)
         # Gamma >1 nang vung toi, giu vung sang - di kem HighlightAE (phoi sang theo den nen
         # khung toi). LUT ~1 ms 720p, chi anh video; model van nhan khung goc. Da thu CLAHE
@@ -484,7 +563,7 @@ class H264Out:
             self.adapt(loss, time.monotonic())
 
     @staticmethod
-    def _fanout(s, outs):
+    def _fanout(s, outs, rec=None):
         import socket
         o = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         while True:
@@ -494,6 +573,8 @@ class H264Out:
                     o.sendto(pkt, d)
                 except OSError:
                     pass  # mot tram tat Tailscale khong duoc cat hinh cua tram kia
+            if rec:
+                rec.write(pkt)                   # SAU khi gui: ghi file khong lam tre video
 
     def _spawn(self):
         w, h = self.size
@@ -1060,6 +1141,9 @@ def main():
     p.add_argument("--no-mjpeg", action="store_true",
                    help="tat MJPEG :8080/stream (khoi nen JPEG, khoi ton bang thong). "
                         "/status van chay. Dung kem --h264 khi bay qua 4G")
+    p.add_argument("--record", default=os.path.expanduser("~/jetson/recordings"), metavar="DIR",
+                   help="ghi luong --h264 (co hop detect) ra DIR/*.ts tu luc chay toi luc ha canh, "
+                        "xoa file > 3 ngay luc khoi dong (xem Recorder). '' = tat")
     p.add_argument("--h264-preset", default="superfast")
     p.add_argument("--h264-ir", action="store_true",
                    help="x264 intra-refresh thay khung IDR moi giay: bitrate deu, mat goi 4G lanh dan")
@@ -1169,8 +1253,15 @@ def main():
         if dev:
             v4l2_set(dev, auto_exposure=3, gain=0, backlight_compensation=0)
     mj._mjpeg_on = not a.no_mjpeg
+    rec = None
+    if a.h264 and a.record:
+        try:  # khong tao duoc thu muc / xoa duoc file cu: van stream, chi khong ghi
+            # khong co ROS (_fire_ros None) -> khong biet arm -> ghi suot, chan boi MIN_FREE
+            rec = Recorder(a.record, lambda: bool(_fire_ros and _fire_ros.armed))
+        except OSError as e:
+            print(f"[rec] tat ghi video ({e})", flush=True)
     h264 = (H264Out(a.h264, a.h264_kbps, a.h264_preset, a.h264_fb_port, a.h264_kbps_min,
-                    a.gamma, a.h264_ir) if a.h264 else None)
+                    a.gamma, a.h264_ir, rec) if a.h264 else None)
     mj._q = mj._q_max = a.quality                # tran chat luong; mang nghen thi Handler ha xuong
 
     # Chi phat khung pf DA VE XONG: hop/xuong khop 100% voi hinh, video di theo nhip
