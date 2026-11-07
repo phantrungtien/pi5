@@ -109,15 +109,20 @@ def so_khop(gem, yolo):
     return khop, [g for g in gem if not any(cung(g, y) for y in yolo)], [y for y in yolo if y not in khop]
 
 
-def _di(s, t, now):
+def _di(s, t, now, hold=HOLD, yolo_only=YOLO_ONLY):
     """O trang thai + vet -> vet duoc di ra ROS va hien len video. Mot luat cho ca hai: thay gi tren video la
-    drone dang nham toi do."""
+    drone dang nham toi do. Vet lua co .score, vet nguoi (track.py) co .conf."""
     if s[0] == "ok":
         return True
-    return t.score >= YOLO_ONLY and (s[0] == "yolo" or (s[0] == "?" and now - s[1] >= HOLD))
+    score = getattr(t, "score", None)
+    score = getattr(t, "conf", 0.0) if score is None else score
+    return score >= yolo_only and (s[0] == "yolo" or (s[0] == "?" and now - s[1] >= hold))
 
 
 class FireVerify:
+    HOLD, YOLO_ONLY, RECHECK, RECHECK1, WHAT = HOLD, YOLO_ONLY, RECHECK, RECHECK1, "lua"
+    near = staticmethod(_gan)   # vet moi la vat cu (dung chung o, khong hoi lai)?
+
     def __init__(self, key, models=MODELS, scan_dir=None):
         self.models, self.sa, self.api_key, self.scan_dir = models, None, None, scan_dir
         if key is not None:  # doc khoa NGAY: sai duong dan thi keu luc khoi dong, khong phai luc dang bay
@@ -138,7 +143,7 @@ class FireVerify:
         self.pool = cf.ThreadPoolExecutor(max_workers=WORKERS * len(models))
         for _ in range(WORKERS):
             threading.Thread(target=self._worker, daemon=True).start()
-        print(f"[ai] Gemini {' + '.join(models)} cung noi lua moi tinh (giu toi {HOLD:g} s)", flush=True)
+        print(f"[ai] Gemini {' + '.join(models)} cung noi {self.WHAT} moi tinh (giu toi {self.HOLD:g} s)", flush=True)
 
     def filter(self, img, tracks, now=None):
         """Vet da xac nhan cua YOLO -> vet duoc phep ra ROS. Goi moi khung tu luong lua."""
@@ -146,7 +151,7 @@ class FireVerify:
         out = []
         for t in tracks:
             self.seen[t.id] = now
-            if _di(self._state(img, t, now), t, now):
+            if _di(self._state(img, t, now), t, now, self.HOLD, self.YOLO_ONLY):
                 out.append(t)
         if now - self._prune > 10:
             self._prune = now
@@ -158,7 +163,7 @@ class FireVerify:
         """Nhan them sau ten lop tren video (FireTracker.draw_cached); None = khong ve vet nay."""
         s = self.v.get(t.id)
         now = time.monotonic() if now is None else now
-        if s is None or not _di(s, t, now):
+        if s is None or not _di(s, t, now, self.HOLD, self.YOLO_ONLY):
             return None
         return " AI:OK" if s[0] == "ok" else " YOLO"
 
@@ -173,12 +178,12 @@ class FireVerify:
             # thoai an luon 'ok' cua hop man hinh (355 px, tam cach 277 px) -> AI:OK + ra ROS ma Gemini chua
             # duoc hoi lan nao. Vat bat lai thi cung co; hop nho moi canh hop to la vat KHAC -> hoi rieng.
             s = next((o for o in self.v.values()
-                      if now - o[3] < RECHECK and _gan(o[2], t.box) and _cung_co(o[2], t.box)), None)
+                      if now - o[3] < self.RECHECK and self.near(o[2], t.box) and _cung_co(o[2], t.box)), None)
             if s is None:
                 s = [None, now, t.box, now, 0]  # o[4]: so lan "khong" lien tiep
             self.v[t.id] = s
         s[2], s[3] = t.box, now  # o di theo vet
-        if (s[0] is None or (s[0] == "khong" and now - s[1] > (RECHECK if s[4] >= 2 else RECHECK1))
+        if (s[0] is None or (s[0] == "khong" and now - s[1] > (self.RECHECK if s[4] >= 2 else self.RECHECK1))
                 or (s[0] == "yolo" and now >= self.down)):
             if now < self.down:
                 s[1], s[0] = now, "yolo"
@@ -195,7 +200,8 @@ class FireVerify:
                 fire, m = self.ask(jpg.tobytes())
                 s[4] = 0 if fire else s[4] + 1
                 s[1], s[0] = time.monotonic(), ("ok" if fire else "khong")
-                print(f"[ai] hop {s[2]}: {'LUA' if fire else 'khong phai lua'} ({time.monotonic() - t0:.1f} s, "
+                print(f"[ai] hop {tuple(int(v) for v in s[2])}: {self.WHAT.upper() if fire else 'khong phai ' + self.WHAT} "
+                      f"({time.monotonic() - t0:.1f} s, "
                       f"{m.replace('gemini-', '')})", flush=True)
             except Exception as e:  # noqa: BLE001 - mang/API/JSON la: chi YOLO, khong giet luong
                 self.down = time.monotonic() + DOWN
@@ -307,6 +313,34 @@ class FireVerify:
         r.raise_for_status()
         self._tok, self._exp = r.json()["access_token"], now + r.json().get("expires_in", 3600)
         return self._tok
+
+
+# Hop PERSON cua YOLO COCO (run_gui --detect-only): 07/11/2026 day pin cong sat ong kinh bi bao PERSON 0.3-0.54,
+# chay khap mep duoi (bay 29/10 giua, ban 07/11 goc trai) -> vung loc co dinh (on_legs) khong theo kip.
+PERSON_PROMPT = ("This image is a crop from a downward-looking drone camera around a region that the onboard "
+                 "person detector flagged; the cyan rectangle marks that region. Is there a real human being (a whole "
+                 "person or a visible body part such as a head, arm, hand or leg) INSIDE the cyan rectangle? Cables, "
+                 "wires, battery leads, drone parts (landing legs, propellers, frame), shadows, empty clothes or bags, "
+                 "statues and pictures of people do NOT count.")
+PERSON_SCHEMA = {"type": "OBJECT", "properties": {"person": {"type": "BOOLEAN"}}, "required": ["person"]}
+
+
+class PersonVerify(FireVerify):
+    """Gemini xac nhan hop PERSON - cung may voi lua (filter/tag, thua ke vet gan, mat mang -> chi YOLO), mot model.
+    Bi bac (day pin nam yen o mep): an, hoi lai sau 2 s roi moi RECHECK 60 s -> ~1 lan/phut cho mot vat nam yen.
+    Mat mang / Gemini cham qua HOLD: hien nhu truoc khi co Gemini (YOLO_ONLY 0 = khong them nguong).
+    ponytail: vet moi o gan + cung co voi hop bi bac trong 60 s an theo luon - nguoi dung dung cho day pin vua bi
+    bac thi an toi 60 s; drone nhin xuong, day sat ong kinh, hiem trung."""
+    YOLO_ONLY, RECHECK, RECHECK1, WHAT = 0.0, 60.0, 2.0, "nguoi"
+    # chi CHONG NHAU moi la vat cu: _gan (tam cach <= canh dai) voi hop day pin 530 px nuot ca nua khung ->
+    # nguoi dung canh bi an theo "khong" cua day (selfcheck 07/11)
+    near = staticmethod(lambda a, b: iou(a, b) >= 0.3)
+
+    def __init__(self, key, models=("gemini-3.1-flash-lite",)):
+        super().__init__(key, models)
+
+    def _ask1(self, model, jpg):
+        return bool(self._post(model, jpg, PERSON_PROMPT, PERSON_SCHEMA, 256, 8)["person"])
 
 
 def _selfcheck():
@@ -465,6 +499,31 @@ def _selfcheck():
     assert quet([that], [a], False) == [], "YOLO da thay cho do -> de duong YOLO + xac nhan lo"
     assert quet([in_], [], False) == [], "anh lua in: mac dinh khong tinh"
     assert quet([in_], [], True) == [([(99, 100, 199, 220)], "m")], "thu to A0: tinh ca anh in"
+    # PersonVerify: day pin (Gemini "khong") an va khong hoi lai khi YOLO bat lai; nguoi that hien AI:OK
+    from types import SimpleNamespace as NS
+    pv, hoi = PersonVerify(None), []
+
+    def ans(v):
+        def f(jpg):
+            hoi.append(v)
+            return v, "gia"
+        return f
+    pv.ask = ans(False)
+    day = NS(id=1, box=(0, 340, 530, 720), conf=0.54)
+    assert pv.filter(img, [day]) == [] and pv.tag(day) is None, "dang hoi -> an"
+    wait(pv.v[1], "khong")
+    assert pv.filter(img, [day]) == [] and pv.tag(day) is None, "Gemini bac -> an"
+    day2 = NS(id=2, box=(6, 344, 528, 718), conf=0.4)
+    n = len(hoi)
+    assert pv.filter(img, [day2]) == [] and len(hoi) == n, "YOLO bat lai day pin -> an theo, khong hoi lai"
+    pv.ask = ans(True)
+    ng = NS(id=3, box=(700, 150, 820, 470), conf=0.8)
+    pv.filter(img, [ng])
+    wait(pv.v[3], "ok")
+    assert pv.filter(img, [day2, ng]) == [ng] and pv.tag(ng) == " AI:OK"
+    mat = NS(id=4, box=(300, 100, 360, 260), conf=0.31)
+    pv.down = time.monotonic() + 10                     # mat mang: hien nhu truoc khi co Gemini
+    assert pv.filter(img, [mat]) == [mat] and pv.tag(mat) == " YOLO"
     print("OK")
 
 

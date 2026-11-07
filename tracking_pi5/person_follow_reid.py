@@ -744,6 +744,9 @@ def on_legs(dets, shape, zoom=1.0):
     return ((iw * ih / area).max(1) >= 0.6) & (dets[:, 3] >= 0.95 * h)
 
 
+VERIFY = None  # run_gui gan PersonVerify (fire_verify.py): Gemini loc hop PERSON nham (day pin cong, 07/11/2026)
+
+
 def detect_only(a):
     """Detect and draw every person; no ReID, target lock, or ROS commands."""
     detector = Detector(a.model, a.threads)
@@ -771,12 +774,14 @@ def detect_only(a):
         if len(dets):
             dets = dets[~on_legs(dets, frame.shape, getattr(cap, "zoom", 1.0))]   # GstCap co .zoom
         live = ids_tracker.update(dets)
+        if VERIFY is not None:  # dang hoi / Gemini bac: khong dem, khong ve
+            live = VERIFY.filter(frame, live)
         STATS["persons"] = len(live)
         for t in live:
             x1, y1, x2, y2 = map(int, t.box)
             color = (0, 255, 0)
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-            cv2.putText(frame, f"PERSON {t.conf:.2f}",
+            cv2.putText(frame, f"PERSON {t.conf:.2f}{(VERIFY.tag(t) or '') if VERIFY is not None else ''}",
                         (x1, max(16, y1 - 7)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
             kp = t.kpts

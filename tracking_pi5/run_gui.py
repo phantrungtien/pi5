@@ -1221,6 +1221,8 @@ def main():
     p.add_argument("--record-720p", action="store_true",
                    help="ghi THEM luong --h264 720p (co hop detect + HUD) ra DIR/*.ts tu luc chay toi luc ha "
                         "canh (Recorder). Mac dinh tat: user 07/11/2026 chi can file 4K")
+    p.add_argument("--no-person-verify", action="store_true",
+                   help="tat Gemini xac nhan hop PERSON (mac dinh BAT khi co --fire-verify + --detect-only)")
     p.add_argument("--no-record-4k", action="store_true",
                    help="tat ghi khung 4K goc tu ARM toi DISARM ra --record/*_4k.mkv (Recorder4K)")
     p.add_argument("--h264-preset", default="superfast")
@@ -1268,6 +1270,13 @@ def main():
 
     import person_follow_reid as pf
     from fire_tracker import _hud
+
+    if a.fire_verify and a.detect_only and not a.no_person_verify:
+        try:  # cung khoa Gemini voi lua; khoa hong -> chi YOLO nhu cu
+            from fire_verify import PersonVerify
+            pf.VERIFY = PersonVerify(a.fire_verify)
+        except Exception as e:  # noqa: BLE001
+            print(f"[ai] tat xac nhan nguoi ({type(e).__name__}: {e})", flush=True)
 
     _init_count_pub()
 
