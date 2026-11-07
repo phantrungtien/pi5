@@ -36,6 +36,7 @@ import latency_stamp
 
 _fire_tracker = None
 _pub_count = None  # std_msgs/Int32 /vision/person_count, xem _init_count_pub()
+_rec4k = None      # Recorder4K: GstCap day khung JPEG 4K goc vao luc ARM
 
 
 def _init_count_pub():
@@ -417,6 +418,7 @@ class Recorder:
     nen ffmpeg / dia cham hay loi KHONG lam tre hay mat video phat.
     """
     KEEP_DAYS, ROTATE, MIN_FREE, SYNC, QMAX, RETRY = 3, 1800, 5 << 30, 2.0, 2000, 10.0
+    TAG, FMT, EXT, MUX, ARMED_ONLY, PIPE = "rec", "mpegts", ".ts", "mpegts", False, True
 
     def __init__(self, d, armed):
         import queue
@@ -432,20 +434,20 @@ class Recorder:
         self.t0 = self.retry = 0.0
         self.dropped = 0
         threading.Thread(target=self._writer, daemon=True).start()
-        print(f"[rec] ghi video -> {d} (xoa {len(old)} file > {self.KEEP_DAYS} ngay)", flush=True)
+        print(f"[{self.TAG}] ghi video -> {d} (xoa {len(old)} file > {self.KEEP_DAYS} ngay)", flush=True)
 
     def _files(self):
-        return sorted(os.path.join(self.d, f) for f in os.listdir(self.d) if f.endswith(".ts"))
+        return sorted(os.path.join(self.d, f) for f in os.listdir(self.d) if f.endswith(self.EXT))
 
     def write(self, pkt):
         """Goi tu _fanout - khong bao gio chan."""
         armed = self.armed()
         self.flew |= armed
-        on = armed or not self.flew              # da bay roi va dang disarm = vua ha canh
+        on = armed or not (self.flew or self.ARMED_ONLY)   # da bay roi va dang disarm = vua ha canh
         if on != self.on:
             self.on = on
-            if not on:
-                print("[rec] ha canh -> dung ghi (ARM lai thi ghi file moi)", flush=True)
+            if not on and self.flew:
+                print(f"[{self.TAG}] ha canh -> dung ghi (ARM lai thi ghi file moi)", flush=True)
         if on:
             try:
                 self.q.put_nowait(pkt)
@@ -455,17 +457,22 @@ class Recorder:
     def _open(self):
         self._close()
         files = self._files()
-        while files and __import__("shutil").disk_usage(self.d).free < self.MIN_FREE:
-            print(f"[rec] dia sap day -> xoa {files[0]}", flush=True)
+        free = lambda: __import__("shutil").disk_usage(self.d).free  # noqa: E731
+        while files and free() < self.MIN_FREE:
+            print(f"[{self.TAG}] dia sap day -> xoa {files[0]}", flush=True)
             os.remove(files.pop(0))
-        path = os.path.join(self.d, time.strftime("%Y%m%d_%H%M%S.ts"))
+        if free() < self.MIN_FREE:               # het file cua minh de xoa: thoi ghi, KHONG lam day dia
+            raise OSError(f"dia con {free() >> 30} GB < {self.MIN_FREE >> 30} GB")
+        path = os.path.join(self.d, time.strftime("%Y%m%d_%H%M%S") + self.EXT)
         self.f = open(path, "wb")
+        # PIPE=False: ffmpeg tu ghi vao path (tua duoc: dong file viet do dai + chi muc), self.f chi de fsync
         self.p = subprocess.Popen(
-            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-use_wallclock_as_timestamps", "1",
-             "-f", "mpegts", "-i", "pipe:0", "-c", "copy", "-flush_packets", "1", "-f", "mpegts", "pipe:1"],
-            stdin=subprocess.PIPE, stdout=self.f)
+            ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-use_wallclock_as_timestamps", "1",
+             "-f", self.FMT, "-i", "pipe:0", "-c", "copy", "-flush_packets", "1", "-f", self.MUX,
+             "pipe:1" if self.PIPE else path],
+            stdin=subprocess.PIPE, stdout=self.f if self.PIPE else subprocess.DEVNULL)
         self.t0 = time.monotonic()
-        print(f"[rec] file moi {path}", flush=True)
+        print(f"[{self.TAG}] file moi {path}", flush=True)
 
     def _close(self):
         if self.p:
@@ -495,7 +502,7 @@ class Recorder:
                     self._close()
             now = time.monotonic()
             if self.dropped:
-                print(f"[rec] dia/ffmpeg cham -> bo {self.dropped} goi", flush=True)
+                print(f"[{self.TAG}] dia/ffmpeg cham -> bo {self.dropped} goi", flush=True)
                 self.dropped = 0
             try:
                 if pkt is not None and now >= self.retry:
@@ -506,12 +513,22 @@ class Recorder:
                     os.fsync(self.f.fileno())
                     t_sync = now
             except OSError as e:                 # dia day, ffmpeg chet (BrokenPipe)...
-                print(f"[rec] loi ghi ({e}) - thu lai sau {self.RETRY:g} s, stream van chay", flush=True)
+                print(f"[{self.TAG}] loi ghi ({e}) - thu lai sau {self.RETRY:g} s, stream van chay", flush=True)
                 self.retry = now + self.RETRY
                 try:
                     self._close()
                 except OSError:
                     self.p = self.f = None
+
+
+class Recorder4K(Recorder):
+    """Ghi khung JPEG 4K GOC cua camera (gst_zoom REC_FD, khong hop detect / HUD) tu ARM toi DISARM ra
+    DIR/*_4k.mkv: MJPEG -c copy (0 nen lai), Matroska ghi do van mo duoc khi rut pin. Khong co ROS
+    (khong biet ARM) = khong ghi. ~15-25 MB/s ngoai troi -> MIN_FREE cao hon file .ts: dia con
+    < 15 GB thi xoa file 4K cu, het file de xoa thi thoi ghi 4K (720p van ghi toi 5 GB).
+    """
+    TAG, FMT, EXT, MUX, ARMED_ONLY, PIPE = "rec4k", "mjpeg", "_4k.mkv", "matroska", True, False
+    QMAX, ROTATE, MIN_FREE = 60, 300, 15 << 30   # 60 khung ~2 s; file 5 phut
 
 
 class H264Out:
@@ -847,7 +864,7 @@ class GstCap:
         # 1080p, zoom 2 -> cat 960x540 diem anh THAT (khong phong anh), nguoi o xa to
         # gap doi trong mat model. Doi lai mat 3/4 goc nhin, xem HFOV trong main().
         self.cam_w, self.cam_h, self.zoom = cam_w or w, cam_h or h, zoom
-        self.zoom_t, self.gray_on = 0.0, False
+        self.zoom_t, self.gray_on, self.rec_on = 0.0, False, False
         self._gray, self._gray_new = None, threading.Event()
         # want: duong dan hoac "auto" (tim lai camera USB moi lan dung gst -> cam lai, doi cong,
         # doi han camera khac deu tu len hinh). dev: node dang mo that.
@@ -886,11 +903,16 @@ class GstCap:
             # gst_zoom.py = gst-launch + doi zoom luc chay + nhanh xam (xem docstring file do).
             # Tien trinh CON chu khong gi trong tien trinh: nvjpegdec thinh thoang SEGV.
             r, w = os.pipe()
+            rr, rw = os.pipe()                   # khung JPEG 4K goc cho Recorder4K, chi khi "rec 1"
             self.p = subprocess.Popen(
                 [sys.executable, GST_ZOOM, dev or "/dev/null", str(self.cam_w), str(self.cam_h),
-                 str(self.fps), str(self.w), str(self.h), *map(str, self._box()), str(w)],
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, pass_fds=(w,))
+                 str(self.fps), str(self.w), str(self.h), *map(str, self._box()), str(w), str(rw)],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, pass_fds=(w, rw))
             os.close(w)
+            os.close(rw)
+            self.p.rec = os.fdopen(rr, "rb")
+            self._send(f"rec {int(self.rec_on)}")    # con moi (vua chet / dung lai) ghi tiep
+            threading.Thread(target=self._pump_rec, args=(self.p,), daemon=True).start()
             threading.Thread(target=self._pump_err, args=(self.p,), daemon=True).start()
             self.p.gray = os.fdopen(r, "rb")
             self._send(f"gray {int(self.gray_on)}")
@@ -966,6 +988,17 @@ class GstCap:
             self._send(f"gray {int(on)}")
             self._gray = None
 
+    def _pump_rec(self, proc):
+        """REC_FD cua gst_zoom: [4 byte do dai][JPEG] -> Recorder4K. Con chet / bi giet: thoat."""
+        with proc.rec as f:
+            while True:
+                n = f.read(4)
+                data = f.read(int.from_bytes(n, "little")) if len(n) == 4 else b""
+                if not data:
+                    return
+                if _rec4k is not None:
+                    _rec4k.write(data)
+
     def _pump_err(self, proc):
         """stderr cua gst_zoom: chuyen nguyen ra journal, dong 'JPEG hong' = camera con day khung."""
         for line in proc.stderr:
@@ -1021,6 +1054,10 @@ class GstCap:
         tu ben ngoai."""
         while self.alive:
             time.sleep(0.25)  # 23/10: nhip kiem 1 s lam mo lai cham toi 1 s
+            want = bool(_rec4k is not None and _rec4k.armed())
+            if want != self.rec_on:              # ARM -> gst_zoom bat dau day khung 4K, DISARM -> thoi
+                self.rec_on = want
+                self._send(f"rec {int(want)}")
             # Chua co khung nao thi dem tu luc dung gst va cho `first_grace`; co roi
             # thi dem tu khung cuoi va cho `restart_after`.
             if self.t:
@@ -1181,6 +1218,8 @@ def main():
     p.add_argument("--record", default=os.path.expanduser("~/jetson/recordings"), metavar="DIR",
                    help="ghi luong --h264 (co hop detect) ra DIR/*.ts tu luc chay toi luc ha canh, "
                         "xoa file > 3 ngay luc khoi dong (xem Recorder). '' = tat")
+    p.add_argument("--no-record-4k", action="store_true",
+                   help="tat ghi khung 4K goc tu ARM toi DISARM ra --record/*_4k.mkv (Recorder4K)")
     p.add_argument("--h264-preset", default="superfast")
     p.add_argument("--h264-ir", action="store_true",
                    help="x264 intra-refresh thay khung IDR moi giay: bitrate deu, mat goi 4G lanh dan")
@@ -1234,7 +1273,7 @@ def main():
         pf.HFOV_DEG = float(np.degrees(2 * np.arctan(np.tan(np.radians(pf.HFOV_DEG) / 2) / a.zoom)))
         print(f"[follow] zoom {a.zoom:g} -> HFOV {pf.HFOV_DEG:.1f} deg", flush=True)
 
-    global _fire_tracker, _fire_period, _fire_ros, _fire_saver, _fire_verify, _fire_scan
+    global _fire_tracker, _fire_period, _fire_ros, _fire_saver, _fire_verify, _fire_scan, _rec4k
     if a.fire_model:
         from fire_tracker import FireTracker
 
@@ -1291,6 +1330,11 @@ def main():
             v4l2_set(dev, auto_exposure=3, gain=0, backlight_compensation=0)
     mj._mjpeg_on = not a.no_mjpeg
     rec = None
+    if a.device and a.record and not a.no_record_4k:
+        try:
+            _rec4k = Recorder4K(a.record, lambda: bool(_fire_ros and _fire_ros.armed))
+        except OSError as e:
+            print(f"[rec4k] tat ghi 4K ({e})", flush=True)
     if a.h264 and a.record:
         try:  # khong tao duoc thu muc / xoa duoc file cu: van stream, chi khong ghi
             # khong co ROS (_fire_ros None) -> khong biet arm -> ghi suot, chan boi MIN_FREE

@@ -12,12 +12,15 @@ VI SAO TIEN TRINH CON chu khong gi ngay trong run_gui: nvjpegdec thinh thoang ch
 3 gio voi gst-launch, hai lan trong 30 s khi chay trong tien trinh). O day chet thi chi mat con
 nay, GstCap._watch dung lai nhu voi gst-launch; trong tien trinh thi chet ca service.
 
-    gst_zoom.py DEV CAM_W CAM_H FPS W H L T CW CH GRAY_FD
-    stdin : moi dong mot lenh "crop L T CW CH" | "gray 0" | "gray 1"; EOF = cha chet -> thoat
+    gst_zoom.py DEV CAM_W CAM_H FPS W H L T CW CH GRAY_FD [REC_FD]
+    stdin : moi dong mot lenh "crop L T CW CH" | "gray 0|1" | "rec 0|1"; EOF = cha chet -> thoat
     fd 1  : khung BGR W*H*3 noi duoi nhau (nhu fdsink cua gst-launch)
     GRAY_FD: khung GRAY8 960x540 noi duoi nhau, chi khi "gray 1"
+    REC_FD: khung JPEG 4K GOC nguyen ven (da qua jpeg_ok, bo so 0 dem), moi khung = 4 byte do dai
+            (little-endian) + JPEG, chi khi "rec 1" - run_gui ghi 4K luc ARM (Recorder4K)
 """
 import os
+import queue
 import sys
 import threading
 
@@ -38,6 +41,9 @@ def jpeg_ok(data):
 def main():
     dev, cam_w, cam_h, fps, w, h, l, t, cw, ch, gray_fd = sys.argv[1:12]
     gray_fd = int(gray_fd)
+    rec_fd = int(sys.argv[12]) if len(sys.argv) > 12 else -1
+    # ponytail: 30 khung ~1 s 4K (~15-30 MB) - dia/cha cham thi BO khung, khong chan luong gst
+    rec = {"on": False, "q": queue.Queue(30), "drop": 0}
     Gst.init(None)
     gw, gh = GRAY
     pl = Gst.parse_launch(
@@ -58,7 +64,13 @@ def main():
         # "gst_adapter_push: assertion 'GST_IS_BUFFER'" roi SEGV. Bo khung hong truoc nvjpegdec.
         b = info.get_buffer()
         n = b.get_size()
-        if jpeg_ok(b.extract_dup(0, n)):  # ponytail: chep ~300 KB x 30 fps = 9 MB/s, re
+        data = b.extract_dup(0, n)        # ponytail: chep ~300 KB x 30 fps = 9 MB/s, re
+        if jpeg_ok(data):
+            if rec["on"]:
+                try:
+                    rec["q"].put_nowait(data.rstrip(b"\0"))
+                except queue.Full:
+                    rec["drop"] += 1
             return Gst.PadProbeReturn.OK
         bad[0] += 1
         print(f"[gst_zoom] bo khung JPEG hong #{bad[0]} ({n} B)", file=sys.stderr, flush=True)
@@ -94,6 +106,22 @@ def main():
             finally:
                 b.unmap(m)
 
+    def rec_pump():
+        while True:
+            data = rec["q"].get()
+            if rec["drop"]:
+                print(f"[gst_zoom] ghi 4K cham -> bo {rec['drop']} khung", file=sys.stderr, flush=True)
+                rec["drop"] = 0
+            try:
+                for part in (len(data).to_bytes(4, "little"), data):
+                    part = memoryview(part)
+                    while part:
+                        part = part[os.write(rec_fd, part):]
+            except OSError:                        # cha da dong pipe
+                os._exit(0)
+
+    if rec_fd >= 0:
+        threading.Thread(target=rec_pump, daemon=True).start()
     threading.Thread(target=pump, args=(pl.get_by_name("a"), 1, int(w) * int(h) * 3), daemon=True).start()
     threading.Thread(target=pump, args=(pl.get_by_name("g"), gray_fd, gw * gh), daemon=True).start()
     for line in sys.stdin:
@@ -102,6 +130,8 @@ def main():
             crop(*map(int, cmd[1:]))
         elif cmd[:1] == ["gray"] and len(cmd) == 2:
             valve.set_property("drop", cmd[1] != "1")
+        elif cmd[:1] == ["rec"] and len(cmd) == 2:
+            rec["on"] = cmd[1] == "1" and rec_fd >= 0
     os._exit(0)  # stdin EOF = run_gui chet: khong de con nay giu camera
 
 
