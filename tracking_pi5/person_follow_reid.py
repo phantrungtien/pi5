@@ -723,11 +723,14 @@ def main(a):
 # thanh PERSON 0,4-0,6 (bay that 27/10/2026, bam ca 2 phut). Chuan hoa [x1,y1,x2,y2] tren khung
 # GOC zoom 1, do tu video tablet. Doi cho gan camera / chan thi do lai.
 LEG_ZONES = np.array([[0.00, 0.25, 0.18, 1.00],    # chan trai
-                      [0.75, 0.35, 0.90, 1.00]])   # chan phai
+                      [0.75, 0.35, 0.90, 1.00],    # chan phai
+                      # day pin cong (cam) giua mep duoi: PERSON 0,3-0,5 ca chuyen bay 29/10/2026,
+                      # hop x 0,39-0,70 y 0,85-1 o moi khung -> chua le de day lech it van loc
+                      [0.35, 0.70, 0.75, 1.00]])
 
 
 def on_legs(dets, shape, zoom=1.0):
-    """Hop nguoi >= 60% nam trong vung chan VA cham mep duoi khung (chan luon cham mep duoi).
+    """Hop nguoi >= 60% nam trong vung chan / day pin VA cham mep duoi khung (chung luon cham mep duoi).
 
     ponytail: nguoi that dung ngay duoi drone, trong dai mep, cham mep duoi cung bi bo;
     can hon thi loc theo hop dung yen khi drone dang di chuyen.
@@ -914,8 +917,10 @@ def selftest():
     d = np.array([[970, 271, 1141, 720, .58, 0],            # chan phai, PERSON 0.58
                   [8, 202, 228, 718, .41, 0],               # chan trai, PERSON 0.41
                   [600, 300, 700, 600, .7, 0],              # nguoi giua khung
-                  [20, 300, 200, 650, .7, 0]], float)       # trong dai chan nhung KHONG cham mep duoi
-    assert on_legs(d, (720, 1280)).tolist() == [True, True, False, False]
+                  [20, 300, 200, 650, .7, 0],               # trong dai chan nhung KHONG cham mep duoi
+                  [500, 615, 856, 720, .52, 0],             # day pin giua mep duoi (video 29/10)
+                  [206, 323, 936, 720, .6, 0]], float)      # nguoi sat drone duoi dat (29/10): giu
+    assert on_legs(d, (720, 1280)).tolist() == [True, True, False, False, True, False]
     assert not on_legs(d[:2], (720, 1280), zoom=2.0).any()  # zoom 2: chan ra ngoai khung cat
 
     print("selftest ok")
