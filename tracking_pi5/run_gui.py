@@ -1216,8 +1216,11 @@ def main():
                    help="tat MJPEG :8080/stream (khoi nen JPEG, khoi ton bang thong). "
                         "/status van chay. Dung kem --h264 khi bay qua 4G")
     p.add_argument("--record", default=os.path.expanduser("~/jetson/recordings"), metavar="DIR",
-                   help="ghi luong --h264 (co hop detect) ra DIR/*.ts tu luc chay toi luc ha canh, "
-                        "xoa file > 3 ngay luc khoi dong (xem Recorder). '' = tat")
+                   help="thu muc ghi video: khung 4K goc tu ARM toi DISARM (*_4k.mkv, Recorder4K), "
+                        "--record-720p them luong --h264. Xoa file > 3 ngay luc khoi dong. '' = tat het")
+    p.add_argument("--record-720p", action="store_true",
+                   help="ghi THEM luong --h264 720p (co hop detect + HUD) ra DIR/*.ts tu luc chay toi luc ha "
+                        "canh (Recorder). Mac dinh tat: user 07/11/2026 chi can file 4K")
     p.add_argument("--no-record-4k", action="store_true",
                    help="tat ghi khung 4K goc tu ARM toi DISARM ra --record/*_4k.mkv (Recorder4K)")
     p.add_argument("--h264-preset", default="superfast")
@@ -1335,7 +1338,7 @@ def main():
             _rec4k = Recorder4K(a.record, lambda: bool(_fire_ros and _fire_ros.armed))
         except OSError as e:
             print(f"[rec4k] tat ghi 4K ({e})", flush=True)
-    if a.h264 and a.record:
+    if a.h264 and a.record and a.record_720p:
         try:  # khong tao duoc thu muc / xoa duoc file cu: van stream, chi khong ghi
             # khong co ROS (_fire_ros None) -> khong biet arm -> ghi suot, chan boi MIN_FREE
             rec = Recorder(a.record, lambda: bool(_fire_ros and _fire_ros.armed))
