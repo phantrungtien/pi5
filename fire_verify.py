@@ -70,6 +70,24 @@ SCAN_SCHEMA = {"type": "OBJECT", "properties": {"fires": {"type": "ARRAY", "item
     "required": ["box_2d", "real"]}}}, "required": ["fires"]}
 
 
+# Quet NGUOI nguyen khung (16/11/2026, tha ne nguoi): camera nhin THANG XUONG. Sim (actor Gazebo): YOLO COCO 0 hop /
+# 437 khung; 3.1-flash-lite va 3.5-flash-lite khong thay; 3.5-flash thay 101/101 lan tra loi (treo 5 m, nguoi trong
+# khung). Do QUET LIEN TUC 43 khung: loi 429/qua han 19-26% DU 1 hay 4 yeu cau song song (quota/hang doi phia
+# Google), tre p50 3.3 s / p90 5-7 s; 4 song song + anh 960 px = 0.61 ket qua/s, khong bao gio 2 khung lien tiep
+# khong co ket qua. 1920 px: 0.45/s, loi nhieu hon. Anh 960 px ~66 KB -> ~0.3 Mbit/s len 4G. Chi chay khi ARM.
+PEOPLE_MODEL = "gemini-3.5-flash"
+PEOPLE_WIDTH = 960       # canh dai anh gui (hop tra ve 0-1000 nen doi lai theo khung goc, khong theo anh nho)
+PEOPLE_WORKERS = 4       # so yeu cau dong thoi
+PEOPLE_TIMEOUT = 8.0     # s: tra loi tre hon cong "du lieu do nguoi con moi" 4 s cua fire_mission thi het gia tri
+PEOPLE_PROMPT = ("This is a frame from a downward-looking camera on a drone hovering a few metres above the ground (it "
+                 "may be a simulation render). Find every human being or human figure visible. Seen from directly "
+                 "above, a person appears as a round head on top of an oval body/shoulders, possibly with arms and "
+                 "legs sticking out. For each give box_2d [ymin, xmin, ymax, xmax] normalized to 0-1000. Empty list "
+                 "if none.")
+PEOPLE_SCHEMA = {"type": "OBJECT", "properties": {"people": {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {
+    "box_2d": {"type": "ARRAY", "items": {"type": "INTEGER"}}}, "required": ["box_2d"]}}}, "required": ["people"]}
+
+
 def crop(img, box, mark=False):
     """Vuong quanh hop, rong gap 1.5 canh dai hop (Gemini can ngu canh: den tran hay lua), toi thieu 128 px.
     mark: ve khung xanh (cyan - khong lan voi mau lua) quanh hop, cho PROMPT hoi dung vat trong khung."""
@@ -140,6 +158,9 @@ class FireVerify:
         # SITL: to A0 toi YOLO 0 hop ke ca nguong 0.05, Gemini quet ra dung to giay). picture: tinh ca lua trong
         # anh in / man hinh - Gemini goi to A0 la real=false. Chi de thu to A0; mac dinh chi lua that.
         self.on_fire, self.picture = None, False
+        # scan_people: on_people(hop, meta, shape) goi CA KHI khong thay ai (= "da nhin, khong co nguoi")
+        self.on_people, self._people_next, self._people_inflight = None, 0.0, 0
+        self._people_lock = threading.Lock()
         self.pool = cf.ThreadPoolExecutor(max_workers=WORKERS * len(models))
         for _ in range(WORKERS):
             threading.Thread(target=self._worker, daemon=True).start()
@@ -274,6 +295,38 @@ class FireVerify:
             print(f"[scan] loi {type(e).__name__}: {str(e)[:120]}", flush=True)
         finally:
             self._scan_busy = False
+
+    def scan_people(self, img, gap, meta=None, workers=PEOPLE_WORKERS):
+        """QUET LIEN TUC: toi `workers` yeu cau dong thoi, cach nhau it nhat `gap` s, gui nguyen khung cho
+        PEOPLE_MODEL tim nguoi -> on_people(hop [x1, y1, x2, y2] theo diem anh khung nay, meta, shape), CA KHI
+        khong thay ai. Ket qua ve khong theo thu tu: moi cai mang meta (gio chup) cua khung minh. Goi moi khung."""
+        now = time.monotonic()
+        with self._people_lock:
+            if self._people_inflight >= workers or now < self._people_next:
+                return
+            self._people_inflight += 1
+            self._people_next = now + gap
+        h, w = img.shape[:2]
+        small = img if w <= PEOPLE_WIDTH else cv2.resize(img, (PEOPLE_WIDTH, round(h * PEOPLE_WIDTH / w)),
+                                                          interpolation=cv2.INTER_AREA)
+        threading.Thread(target=self._people1, args=(small, meta, img.shape), daemon=True).start()
+
+    def _people1(self, img, meta, shape):
+        t0 = time.monotonic()
+        try:
+            h, w = shape[:2]   # hop 0-1000 -> diem anh KHUNG GOC (anh gui da thu nho)
+            jpg = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 85])[1].tobytes()
+            boxes = [(int(b[1] * w / 1000), int(b[0] * h / 1000), int(b[3] * w / 1000), int(b[2] * h / 1000))
+                     for p in self._post(PEOPLE_MODEL, jpg, PEOPLE_PROMPT, PEOPLE_SCHEMA, 512, PEOPLE_TIMEOUT)["people"]
+                     if len(b := p["box_2d"]) == 4]
+            print(f"[nguoi] Gemini {len(boxes)} nguoi ({time.monotonic() - t0:.1f} s)", flush=True)
+            if self.on_people is not None:
+                self.on_people(boxes, meta, shape)
+        except Exception as e:  # noqa: BLE001 - mat mang / 429: yeu cau ke tiep quet lai; fire_mission tu cho
+            print(f"[nguoi] loi {type(e).__name__}: {str(e)[:120]}", flush=True)
+        finally:
+            with self._people_lock:
+                self._people_inflight -= 1
 
     def _ask1(self, model, jpg):
         """Mot lan goi mot model -> True neu thay lua that."""
@@ -470,6 +523,30 @@ def _selfcheck():
     assert so_khop([], y) == ([], [], y) and so_khop(g, []) == ([], g, [])
 
     import tempfile
+    # quet nguoi lien tuc: hop 0-1000 -> diem anh KHUNG GOC (anh gui thu nho 960), on_people ca khi rong,
+    # toi da `workers` yeu cau dong thoi, cach nhau >= gap
+    pp, got, sizes, gate = FireVerify(None), [], [], threading.Event()
+    pp.on_people = lambda b, meta, shape: got.append((b, meta, shape[:2]))
+
+    def slow(model, jpg, *a):
+        sizes.append(cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR).shape[1])
+        gate.wait(2)
+        return {"people": [{"box_2d": [135, 374, 329, 453]}, {"box_2d": [1, 2]}]}
+    pp._post = slow
+    big = np.zeros((1080, 1920, 3), np.uint8)
+    for i in range(6):
+        pp.scan_people(big, gap=0.0, meta=i, workers=4)
+    assert pp._people_inflight == 4, 'toi da 4 yeu cau dong thoi'
+    pp.scan_people(big, gap=10.0, meta="x", workers=8)
+    pp.scan_people(big, gap=10.0, meta="y", workers=8)   # trong gap: bo qua
+    gate.set()
+    for _ in range(300):
+        if not pp._people_inflight:
+            break
+        time.sleep(0.01)
+    assert sorted(str(g[1]) for g in got) == ["0", "1", "2", "3", "x"], got
+    assert all(g[0] == [(718, 145, 869, 355)] and g[2] == (1080, 1920) for g in got), got
+    assert sizes and set(sizes) == {PEOPLE_WIDTH}, sizes
     sc = FireVerify(None, scan_dir=tempfile.mkdtemp())
     sc._post = lambda *a: {"fires": [{"box_2d": [139, 78, 306, 156], "real": True}]}  # 0-1000 -> (100,100,200,220)
     sc.scan(img, [a, c], every=10)

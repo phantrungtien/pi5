@@ -82,6 +82,7 @@ _fire_ros = None   # _FireRos khi co ROS
 _fire_saver = None  # _FireSaver khi --fire-save
 _fire_verify = None  # fire_verify.FireVerify khi --fire-verify: Gemini loc vet truoc khi ra ROS
 _fire_scan = 0.0     # --fire-scan N: Gemini quet nguyen khung moi N s khi drone arm / /fire/scan true
+_person_scan = 0.0   # --person-scan N: Gemini tim NGUOI nguyen khung moi N s khi drone arm (YOLO mu voi nguoi nhin tu tren)
 
 
 class _FireSaver:
@@ -170,9 +171,17 @@ def _fire_loop(tracker):
         if _fire_verify is not None:
             if _fire_scan and _fire_ros is not None and (_fire_ros.armed or _fire_ros.scan_cmd):
                 _fire_verify.scan(img, tracks, _fire_scan, meta)  # hop YOLO CHUA loc: so ca hop Gemini bac
+            if _person_scan and meta is not None and _fire_ros is not None and (_fire_ros.armed or _fire_ros.scan_cmd):
+                _fire_verify.scan_people(img, _person_scan, meta)
             tracks = _fire_verify.filter(img, tracks)
         if meta is not None and _fire_ros is not None:
             _fire_ros.publish_fire(tracks, meta, img.shape, tracker.names)
+
+
+def _gemini_people(boxes, meta, shape):
+    """Gemini quet ca khung tim nguoi -> /person/detections (ca khi khong thay ai), stamp = gio CHUP khung."""
+    if _fire_ros is not None and meta is not None:
+        _fire_ros.publish_person([(b, 1.0) for b in boxes], meta, shape, scan=True)
 
 
 PICTURE_FLAG = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "fire_picture")
@@ -217,8 +226,10 @@ class _FireRos:
     # ponytail: lenh -> servo ~40 ms (MAVROS 27/10) + co cau mo chua do. Chinh sau lan tha thu: bong
     # roi truoc vong thi tang, sau vong thi giam (chi anh huong khi drone dang troi).
     DROP_DELAY = 0.1
+    PERSON_MEM = 6.0    # nguoi da thay con tinh la "o do" bao lau: Gemini quet moi ~2 s + tre 2 s, nguoi di ~0.3-1 m/s
 
-    def __init__(self, cap_ref, calib="", cam_off=(0.20, 0.0, -0.02), cam_to_drop=0.17, cam_roll=0.0):
+    def __init__(self, cap_ref, calib="", cam_off=(0.20, 0.0, -0.02), cam_to_drop=0.17, cam_roll=0.0,
+                 person_clear=1.5):
         import rclpy
         from rclpy.executors import SingleThreadedExecutor
         from rclpy.qos import DurabilityPolicy, QoSProfile
@@ -228,6 +239,19 @@ class _FireRos:
         self.Detection2D, self.Detection2DArray, self.Hyp = Detection2D, Detection2DArray, ObjectHypothesisWithPose
         self.node = rclpy.create_node("fire_camera")
         self.pub = self.node.create_publisher(Detection2DArray, "/fire/detections", 10)
+        # NGUOI (16/11/2026): hop nguoi (YOLO moi khung + Gemini quet) -> /person/detections -> fire_locator dinh vi
+        # -> /fire/persons (ENU). Doc lai /fire/persons de (1) ve dau nguoi len video, (2) vong ngam DO + canh bao
+        # phi cong khi diem bong cham dat cach nguoi < person_clear m. fire_mission dung cung topic de tha ne nguoi.
+        self.pub_person = self.node.create_publisher(Detection2DArray, "/person/detections", 10)
+        self.person_clear, self.people, self.mode, self._warn_t, self.txt_pub = person_clear, [], "", 0.0, None
+        try:
+            from geometry_msgs.msg import PoseArray
+            from mavros_msgs.msg import StatusText
+            self.node.create_subscription(PoseArray, "/fire/persons", self._on_people, 10)
+            self.StatusText = StatusText
+            self.txt_pub = self.node.create_publisher(StatusText, "/mavros/statustext/send", 10)
+        except ImportError:
+            pass
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.node.create_subscription(Float32, "/fire/zoom", self._on_zoom, latched)
         # --fire-scan chi chay khi dang bay (arm) hoac bat tay: ros2 topic pub -t 3 /fire/scan std_msgs/msg/Bool
@@ -293,7 +317,11 @@ class _FireRos:
     def _on_state(self, msg):
         if bool(msg.armed) != self.armed:
             print(f"[scan] drone {'ARM' if msg.armed else 'DISARM'}", flush=True)
-        self.armed = bool(msg.armed)
+        self.armed, self.mode = bool(msg.armed), msg.mode
+
+    def _on_people(self, msg):
+        ts = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        self.people += [(ts, q.position.x, q.position.y) for q in msg.poses]
 
     def _on_zoom(self, msg):
         cap = self._cap()
@@ -344,6 +372,22 @@ class _FireRos:
         if drop[2] - gz < 0.5:
             return
         hit = impact_point(drop, v, gz, self.DROP_DELAY)
+        # Nguoi gan diem bong cham dat: vong ngam DO; bay tay (ARM, khong GUIDED) thi bao phi cong qua STATUSTEXT
+        # moi 3 s. Bay tu hanh fire_mission tu ne (cung /fire/persons), khong bao trung o day.
+        self.people = [q for q in self.people if time.time() - q[0] < self.PERSON_MEM]
+        near = any(np.hypot(qx - hit[0], qy - hit[1]) < self.person_clear for _, qx, qy in self.people)
+        auto = self.mode in ("GUIDED", "AUTO", "RTL", "SMART_RTL", "LAND")   # 16/11 sim: RTL bay qua nguoi cung bao nham
+        if near and self.armed and not auto and now - self._warn_t > 3.0 and self.txt_pub is not None:
+            self._warn_t = now
+            self.txt_pub.publish(self.StatusText(severity=2, text="FIRE: CẢNH BÁO: CÓ NGƯỜI TRONG VÙNG THẢ"))
+            print("[drop] CANH BAO phi cong: nguoi trong vung tha", flush=True)
+        for _, qx, qy in self.people:                    # dau X do = cho fire_locator dinh vi nguoi
+            q = ground_pixel(np.array([qx, qy, gz]), pos, R, self.cam_off, self._K, self._D, self.R_cam)
+            if q is not None:
+                qx_, qy_ = px(q)
+                for a_, b_ in (((qx_ - 12, qy_ - 12), (qx_ + 12, qy_ + 12)), ((qx_ - 12, qy_ + 12), (qx_ + 12, qy_ - 12))):
+                    mark(cv2.line, a_, b_, color=(0, 0, 255))
+        ring = (0, 0, 255) if near else (255, 255, 0)
         uv = ground_pixel(hit, pos, R, self.cam_off, self._K, self._D, self.R_cam)
         if uv is None:
             return
@@ -352,12 +396,11 @@ class _FireRos:
             return
         edge = ground_pixel(hit + [0.5, 0.0, 0.0], pos, R, self.cam_off, self._K, self._D, self.R_cam)
         r = max(6, round(np.hypot(*np.subtract(px(edge), (x, y))))) if edge is not None else 12
-        mark(cv2.circle, (x, y), r, color=(255, 255, 0))
-        mark(cv2.circle, (x, y), 2, color=(255, 255, 0))
-        txt = f"THA {drop[2] - gz:.1f}m"
+        mark(cv2.circle, (x, y), r, color=ring)
+        mark(cv2.circle, (x, y), 2, color=ring)
+        txt = f"THA {drop[2] - gz:.1f}m" + (" - CO NGUOI!" if near else "")   # cv2 khong ve duoc chu co dau
         cv2.putText(frame, txt, (x + r + 6, y + 6), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 4, cv2.LINE_AA)
-        cv2.putText(frame, txt, (x + r + 6, y + 6), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2,
-                    cv2.LINE_AA)
+        cv2.putText(frame, txt, (x + r + 6, y + 6), cv2.FONT_HERSHEY_SIMPLEX, 0.6, ring, 2, cv2.LINE_AA)
 
     def _loop(self):
         n, t_log = 0, time.monotonic() + 5
@@ -378,14 +421,21 @@ class _FireRos:
                     print(f"[fire] do mat dat: {n / 5:.1f} khung xam/s", flush=True)
                     n, t_log = 0, time.monotonic() + 5
 
-    def publish_fire(self, tracks, meta, shape, names):
+    def publish_person(self, boxes, meta, shape, scan=False):
+        """boxes [((x1, y1, x2, y2), diem)] theo diem anh khung `shape`; rong van gui (= da nhin, khong co ai).
+        scan: ket qua QUET ca khung (Gemini) - frame_id "scan"; fire_mission chi tha khi co lan quet con moi."""
+        from types import SimpleNamespace
+        self.publish_fire([SimpleNamespace(box=b, score=sc, cls=0) for b, sc in boxes], meta, shape, {0: "person"},
+                          self.pub_person, "scan" if scan else "drone_cam")
+
+    def publish_fire(self, tracks, meta, shape, names, pub=None, frame="drone_cam"):
         t_wall, (l, t, cw, ch) = meta
         h, w = shape[:2]
         sx, sy = cw / w, ch / h
         msg = self.Detection2DArray()
         msg.header.stamp.sec = int(t_wall)
         msg.header.stamp.nanosec = int((t_wall % 1) * 1e9)
-        msg.header.frame_id = "drone_cam"
+        msg.header.frame_id = frame
         for tr in tracks:
             x1, y1, x2, y2 = tr.box
             d = self.Detection2D()
@@ -398,7 +448,7 @@ class _FireRos:
             hyp.hypothesis.score = float(tr.score)
             d.results.append(hyp)
             msg.detections.append(d)
-        self.pub.publish(msg)  # ca khi rong: fire_locator bo qua, con ros2 topic hz thay song
+        (pub or self.pub).publish(msg)  # ca khi rong: fire_locator bo qua, con ros2 topic hz thay song
 
 
 class Recorder:
@@ -1251,6 +1301,13 @@ def main():
     p.add_argument("--fire-verify", default=None, metavar="KEY",
                    help="Gemini xac nhan vet lua truoc khi ra /fire/detections: khoa service account "
                         ".json (Vertex) - xem fire_verify.py")
+    p.add_argument("--person-scan", type=float, default=0.8, metavar="S",
+                   help="Gemini tim NGUOI nguyen khung khi drone ARM (can --fire-verify), QUET LIEN TUC: toi 4 yeu "
+                        "cau dong thoi, gui cach nhau >= S s (YOLO khong thay nguoi nhin thang tu tren xuong). Hop "
+                        "ra /person/detections. 0 = tat")
+    p.add_argument("--person-clear", type=float, default=1.5, metavar="M",
+                   help="diem bong cham dat cach nguoi duoi M m: vong ngam do + canh bao phi cong khi bay tay "
+                        "(= person_clear cua fire_mission)")
     p.add_argument("--fire-scan", type=float, default=0.0, metavar="S",
                    help="can --fire-verify: Gemini quet nguyen khung moi S s, so voi YOLO, ghi log + luu khung "
                         "lech vao <--fire-save>/scan; lua YOLO SOT -> /fire/detections (Gemini nam quyen). "
@@ -1287,7 +1344,7 @@ def main():
         pf.HFOV_DEG = float(np.degrees(2 * np.arctan(np.tan(np.radians(pf.HFOV_DEG) / 2) / a.zoom)))
         print(f"[follow] zoom {a.zoom:g} -> HFOV {pf.HFOV_DEG:.1f} deg", flush=True)
 
-    global _fire_tracker, _fire_period, _fire_ros, _fire_saver, _fire_verify, _fire_scan, _rec4k
+    global _fire_tracker, _fire_period, _fire_ros, _fire_saver, _fire_verify, _fire_scan, _person_scan, _rec4k
     if a.fire_model:
         from fire_tracker import FireTracker
 
@@ -1305,6 +1362,10 @@ def main():
                 _fire_tracker.tag = _fire_verify.tag
                 _fire_scan = a.fire_scan
                 _fire_verify.on_fire, _fire_verify.picture = _gemini_fire, _PictureFlag(a.fire_picture)
+                _fire_verify.on_people, _person_scan = _gemini_people, a.person_scan
+                if _person_scan:
+                    print(f"[nguoi] Gemini quet nguoi LIEN TUC khi drone ARM (4 dong thoi, cach >= {_person_scan:g} s)",
+                          flush=True)
                 print(f"[ai] anh lua in: {'BAT' if _fire_verify.picture else 'tat'} (--fire-picture / {PICTURE_FLAG})",
                       flush=True)
                 if _fire_scan:
@@ -1324,7 +1385,7 @@ def main():
     if _fire_tracker is not None and _pub_count is not None:  # _pub_count = rclpy da init duoc
         try:
             _fire_ros = _FireRos(cap_ref, a.calib, [float(x) for x in a.cam_offset.split(",")], a.cam_to_drop,
-                                 a.cam_roll)
+                                 a.cam_roll, a.person_clear)
         except Exception as e:  # noqa: BLE001
             print(f"[ROS] khong tao duoc node lua ({e}) -> chi ve hop len video", flush=True)
 
@@ -1368,6 +1429,7 @@ def main():
     n_frame = [0]
     fps = [0.0, time.monotonic()]                # [fps EMA, moc khung truoc] - fps VIDEO that
     seg_t = [time.monotonic() + 5]               # --stamp: lan in [doan] ke tiep
+    pp_t = [0.0]                                 # lan gui /person/detections gan nhat
 
     def show(_win, frame):
         n_frame[0] += 1
@@ -1380,6 +1442,10 @@ def main():
         if cap is not None and getattr(cap, "age", None) and cap.age() > cap.stale:
             return
         mj._persons = n = pf.STATS["persons"]    # cho /status
+        if _fire_ros is not None and time.monotonic() - pp_t[0] >= 0.2:   # hop nguoi YOLO -> ROS, 5 Hz la du
+            pp_t[0] = time.monotonic()
+            box = cap._box() if hasattr(cap, "_box") else (0, 0, frame.shape[1], frame.shape[0])
+            _fire_ros.publish_person([(b[:4], b[4]) for b in pf.STATS.get("boxes", ())], (time.time(), box), frame.shape)
         if _pub_count is not None:
             pub, Int32 = _pub_count
             pub.publish(Int32(data=n))           # moi khung phat ~15 Hz: 4 byte, khong dang tiec

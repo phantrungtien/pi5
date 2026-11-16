@@ -13,19 +13,23 @@ cal = load_calib(get_package_share_directory("fire_drone") + "/config/drone_cam_
 cam_off, P = np.array([0.20, 0, -0.02]), types.SimpleNamespace
 
 
-def ring(z, rel, vel=(0, 0, 0), pitch=0.0, zoom=1.0, roll_cam=0.0):
+def ring(z, rel, vel=(0, 0, 0), pitch=0.0, zoom=1.0, roll_cam=0.0, people=(), mode="", sent=None, red=False):
     """Tam vong xanh (diem anh khung 1280x720) hoac None. pitch > 0 = chui mui (quay quanh y than FLU)."""
     now = time.monotonic()
     pose = P(pose=P(position=P(x=0.0, y=0.0, z=z),
                     orientation=P(x=0.0, y=np.sin(pitch / 2), z=0.0, w=np.cos(pitch / 2))))
     s = P(calib=cal, _ksize=None, cam_off=cam_off, drop_off=cam_off - [0.17, 0, 0], DROP_DELAY=0.1,
           _fx=(ground_pixel, impact_point, calib_for, quat_to_rot), pose=(now, pose), R_cam=cam_to_body(roll_cam),
-          vel=(now, P(twist=P(linear=P(x=vel[0], y=vel[1], z=vel[2])))), rel_alt=(now, P(data=rel)))
+          vel=(now, P(twist=P(linear=P(x=vel[0], y=vel[1], z=vel[2])))), rel_alt=(now, P(data=rel)),
+          people=[(time.time(), x, y) for x, y in people], person_clear=1.5, PERSON_MEM=6.0, armed=True, mode=mode,
+          _warn_t=0.0, StatusText=lambda **k: k["text"],
+          txt_pub=None if sent is None else P(publish=sent.append))
     cw, ch = round(3840 / zoom), round(2160 / zoom)
     cap = P(_box=lambda: ((3840 - cw) // 2, (2160 - ch) // 2, cw, ch), cam_w=3840, cam_h=2160, zoom_t=0.0)
     f = np.full((720, 1280, 3), 128, np.uint8)
     run_gui._FireRos.draw_drop(s, f, cap)
-    m = (f[:, :, 0] == 255) & (f[:, :, 1] == 255) & (f[:, :, 2] == 0)
+    m = ((f[:, :, 0] == 0) & (f[:, :, 1] == 0) & (f[:, :, 2] == 255) if red else      # vong DO khi co nguoi
+         (f[:, :, 0] == 255) & (f[:, :, 1] == 255) & (f[:, :, 2] == 0))
     n, _, st, _ = cv2.connectedComponentsWithStats(m.astype(np.uint8))
     rings = [st[i] for i in range(1, n) if abs(st[i][2] - st[i][3]) <= 2]   # vong: hop vuong, chu "THA" thi khong
     if not rings:
@@ -46,4 +50,13 @@ assert abs(ring(6.2, 5.0)[1] - c[1]) <= 2                     # z local troi +1.
 # camera gan nghieng -8.2 do (tha that 29/10: bong 0.8 m TRAI vong o 5.5 m) -> vong dich TRAI ~120 px, doc giu
 r = ring(5.5, 5.5, roll_cam=-8.2)
 assert -128 < r[0] - ring(5.5, 5.5)[0] < -112 and abs(r[1] - ring(5.5, 5.5)[1]) <= 3, r
+# NGUOI gan diem bong cham dat (16/11/2026): vong DO; bay tay thi bao phi cong, tu hanh / RTL thi khong
+hit = (0.03, 0.0)   # treo yen: bong roi ngay duoi cho tha (truoc tam FC 3 cm)
+for mode, warn in (("LOITER", 1), ("POSHOLD", 1), ("GUIDED", 0), ("RTL", 0)):
+    sent = []
+    assert ring(5.0, 5.0, people=[(hit[0] + 1.0, hit[1])], mode=mode, sent=sent, red=True) is not None, mode
+    assert ring(5.0, 5.0, people=[(hit[0] + 1.0, hit[1])], mode=mode) is None, "vong xanh phai doi sang do"
+    assert len(sent) == warn and all("NGƯỜI" in t and len(t.encode()) <= 49 for t in sent), (mode, sent)
+sent = []
+assert ring(5.0, 5.0, people=[(hit[0] + 2.0, hit[1])], mode="LOITER", sent=sent) is not None and not sent  # 2 m: ngoai 1.5 m
 print("test_drop_reticle OK")

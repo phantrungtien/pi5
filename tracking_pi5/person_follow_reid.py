@@ -777,6 +777,7 @@ def detect_only(a):
         if VERIFY is not None:  # dang hoi / Gemini bac: khong dem, khong ve
             live = VERIFY.filter(frame, live)
         STATS["persons"] = len(live)
+        STATS["boxes"] = [tuple(map(float, t.box)) + (float(t.conf),) for t in live]   # run_gui -> /person/detections
         for t in live:
             x1, y1, x2, y2 = map(int, t.box)
             color = (0, 255, 0)
