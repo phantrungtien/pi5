@@ -241,7 +241,7 @@ class _FireRos:
         self.pub = self.node.create_publisher(Detection2DArray, "/fire/detections", 10)
         # NGUOI (16/11/2026): hop nguoi (YOLO moi khung + Gemini quet) -> /person/detections -> fire_locator dinh vi
         # -> /fire/persons (ENU). Doc lai /fire/persons de (1) ve dau nguoi len video, (2) vong ngam DO + canh bao
-        # phi cong khi diem bong cham dat cach nguoi < person_clear m. fire_mission dung cung topic de tha ne nguoi.
+        # phi cong khi diem bong cham dat cach nguoi < person_clear m. fire_mission KHONG ne nguoi (20/11/2026).
         self.pub_person = self.node.create_publisher(Detection2DArray, "/person/detections", 10)
         self.person_clear, self.people, self.mode, self._warn_t, self.txt_pub = person_clear, [], "", 0.0, None
         try:
@@ -373,7 +373,7 @@ class _FireRos:
             return
         hit = impact_point(drop, v, gz, self.DROP_DELAY)
         # Nguoi gan diem bong cham dat: vong ngam DO; bay tay (ARM, khong GUIDED) thi bao phi cong qua STATUSTEXT
-        # moi 3 s. Bay tu hanh fire_mission tu ne (cung /fire/persons), khong bao trung o day.
+        # moi 3 s. Bay tu hanh: khong bao (bay ngang qua nguoi = bao nham); van hanh nhin vong do roi moi truot.
         self.people = [q for q in self.people if time.time() - q[0] < self.PERSON_MEM]
         near = any(np.hypot(qx - hit[0], qy - hit[1]) < self.person_clear for _, qx, qy in self.people)
         auto = self.mode in ("GUIDED", "AUTO", "RTL", "SMART_RTL", "LAND")   # 16/11 sim: RTL bay qua nguoi cung bao nham
