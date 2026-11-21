@@ -69,12 +69,15 @@ ExecStart=/bin/bash -c "source /opt/ros/humble/setup.bash; source /home/robomang
       --stream-width 1280 --h264 100.96.37.111:5600 --h264-kbps 1200 --h264-fb-port 5601 --h264-kbps-min 1200 --no-mjpeg \
       --fire-model /home/robomango/phantrungtien-fire-detection/models/best_nano_111_640.onnx \
       --fire-conf 0.2 --fire-threads 1 --fire-hz 5 \
-      --fire-verify /home/robomango/jetson/hidden-lyceum-473116-p8-1f580efa4c6d.json --fire-scan 3"
+      --fire-verify /home/robomango/jetson/hidden-lyceum-473116-p8-1f580efa4c6d.json --fire-scan 3 \
+      --fire-save /home/robomango/fire_dataset_bay"
 # 23/10/2026 --fire-save: khung co hop lua + nhan YOLO -> ~/fire_dataset/<ngay>/ (<= 1 khung/s,
 # toi da 5 GB moi lan chay, dung khi dia con < 10 GB) de gom anh bao nham (thanh an toan vang
 # cua robot bi bao Fire 18/19 khung) ma train lai. Bo co nay = tat luu.
-# 27/10 da bo --fire-save (nguoi dung: co Gemini roi, khoi luu anh). --fire-scan van chay, chi khong ghi
-# ~/fire_dataset/scan. Du lieu cu ~/fire_dataset (1,3 GB) chua xoa.
+# 27/10 da bo --fire-save (nguoi dung: co Gemini roi, khoi luu anh). Du lieu cu ~/fire_dataset (1,3 GB) chua xoa.
+# 21/11/2026 bat lai --fire-save (user: luu anh lua tren khong khi phat hien thanh cong de train them), NGHIA MOI:
+# chi luc ARM, chi hop da xac nhan (ra /fire/detections), ten file _ok / _yolo / _scan (xem run_gui _FireSaver).
+# Thu muc rieng ~/fire_dataset_bay, khong tron voi du lieu cu. ~/fire_dataset_bay/scan: khung YOLO/Gemini lech.
 # 26/10/2026 --h264-kbps = --h264-kbps-min = 1200: ghim bitrate. Tu chinh (1000..1500) doi bitrate
 # = khoi dong lai ffmpeg (PTS ve 0) -> 120 lan/30 phut, tablet (QMediaPlayer) mat hinh toi REPLAY_S
 # 5 s moi lan, den Jetson do. 1000-1300 kbps log mat ~0%. Can tu chinh lai = encoder doi bitrate song.

@@ -86,11 +86,17 @@ _person_scan = 0.0   # --person-scan N: Gemini tim NGUOI nguyen khung moi N s kh
 
 
 class _FireSaver:
-    """--fire-save DIR: khung CO hop lua -> DIR/<ngay>/<gio>_x<zoom>_d<diem>.jpg + .txt nhan YOLO
-    (lop cx cy w h, chuan hoa) cua chinh cac hop model doan. Train lai: mo bang cong cu gan nhan,
-    XOA hop sai (vd thanh an toan vang cua robot bi bao Fire 18/19 khung, 23/10/2026) -> anh am,
-    sua hop dung -> anh duong. Luu NGUYEN khung model thay (chua ve hop), khong cat quanh hop:
-    YOLO hoc ca nen xung quanh, anh cat thi mat ngu canh do."""
+    """--fire-save DIR: lua DA XAC NHAN luc drone ARM (dang bay) -> DIR/<ngay>/<gio>_x<zoom>_d<diem>_<nguon>.jpg
+    + .txt nhan YOLO (lop cx cy w h, chuan hoa) cua dung cac hop da ra /fire/detections (= cai drone bay toi).
+    nguon: ok = Gemini xac nhan hop YOLO; yolo = chi YOLO (Gemini cham/loi/429, diem >= YOLO_ONLY); scan = Gemini
+    quet ca khung thay lua ma YOLO SOT - anh quy nhat de train lai. Them _anh khi dang che do anh in (--fire-picture
+    / file ~/jetson/fire_picture): Gemini tinh ca anh in VA hop no tu noi real=false (sim 21/11: cham nau tren co)
+    -> khong phai lua that, loc ra truoc khi train. User 21/11/2026: luu anh lua tren khong khi
+    phat hien thanh cong. Truoc do (23-27/10) luu MOI khung co hop YOLO ke ca bao nham, duoi dat cung luu; khung
+    YOLO/Gemini lech nhau van nam o DIR/scan (fire_verify --fire-scan). Train lai: mo bang cong cu gan nhan, SOAT
+    hop (Gemini cung co lan sai), roi moi them vao tap. Luu NGUYEN khung model thay (chua ve hop), khong cat quanh
+    hop: YOLO hoc ca nen xung quanh, anh cat thi mat ngu canh do."""
+    # ponytail: goi tu 2 luong (luong lua + luong quet Gemini), khong khoa: dua nhau nhieu nhat la 2 khung cung 1 s
     PERIOD = 1.0     # ponytail: <= 1 khung/s (~150 KB) ~ 0.5 GB/gio thay lua lien tuc
     MAX_BYTES = 5e9  # ponytail: moi lan chay luu toi da 5 GB; chuyen thu muc di roi chay lai
     MIN_FREE = 10e9  # chua bao gio lam day dia: con < 10 GB trong thi thoi luu
@@ -100,17 +106,19 @@ class _FireSaver:
         os.makedirs(root, exist_ok=True)
         with open(os.path.join(root, "classes.txt"), "w") as f:  # thu tu lop cho LabelImg/YOLO
             f.write("\n".join(names[i] for i in sorted(names)) + "\n")
-        print(f"[fire] luu khung co lua -> {root} (<= 1 khung/s)", flush=True)
+        print(f"[fire] luu lua DA XAC NHAN luc ARM -> {root} (<= 1 khung/s)", flush=True)
 
-    def __call__(self, img, tracks, meta):
+    def __call__(self, img, tracks, meta, src):
         now = time.monotonic()
-        if not (self.on and tracks) or now - self.t < self.PERIOD:
+        if not (self.on and tracks and _fire_ros is not None and _fire_ros.armed) or now - self.t < self.PERIOD:
             return
         self.t = now
+        if _fire_verify is not None and _fire_verify.picture:
+            src += "_anh"   # che do anh in: khong phai lua that (xem docstring)
         zoom = self.cam_w / meta[1][2] if meta else 0.0  # 0 = khung ngay sau doi zoom
         d = os.path.join(self.root, time.strftime("%Y%m%d"))
         base = os.path.join(d, time.strftime("%H%M%S") + f"_{int(time.time() * 1000) % 1000:03d}"
-                            f"_x{zoom:.1f}_d{max(t.score for t in tracks):.2f}")
+                            f"_x{zoom:.1f}_d{max(t.score for t in tracks):.2f}_{src}")
         h, w = img.shape[:2]
         try:  # moi loi dia (ca disk_usage khi thu muc mat) chi dung luu, khong giet luong lua
             import shutil
@@ -166,14 +174,15 @@ def _fire_loop(tracker):
             print(f"[track] loi suy dien: {type(e).__name__}: {e}", flush=True)
             time.sleep(1.0)
             continue
-        if _fire_saver is not None:
-            _fire_saver(img, tracks, meta)  # ca hop Gemini bac: chinh la anh bao nham can de train lai
         if _fire_verify is not None:
             if _fire_scan and _fire_ros is not None and (_fire_ros.armed or _fire_ros.scan_cmd):
                 _fire_verify.scan(img, tracks, _fire_scan, meta)  # hop YOLO CHUA loc: so ca hop Gemini bac
             if _person_scan and meta is not None and _fire_ros is not None and (_fire_ros.armed or _fire_ros.scan_cmd):
                 _fire_verify.scan_people(img, _person_scan, meta)
             tracks = _fire_verify.filter(img, tracks)
+        if _fire_saver is not None:   # chi hop DA LOC (= ra ROS), chi luc ARM - xem _FireSaver
+            ok = _fire_verify is not None and any(_fire_verify.tag(t) == " AI:OK" for t in tracks)
+            _fire_saver(img, tracks, meta, "ok" if ok else "yolo")
         if meta is not None and _fire_ros is not None:
             _fire_ros.publish_fire(tracks, meta, img.shape, tracker.names)
 
@@ -198,15 +207,17 @@ class _PictureFlag:
         return self.on or os.path.exists(PICTURE_FLAG)
 
 
-def _gemini_fire(boxes, meta, shape):
+def _gemini_fire(boxes, meta, img):
     """Gemini quet ca khung thay lua YOLO SOT -> /fire/detections nhu hop YOLO, diem 1.0. Den tre 1-7 s:
-    stamp = gio CHUP khung (meta), fire_locator lay pose drone dung luc do."""
+    stamp = gio CHUP khung (meta), fire_locator lay pose drone dung luc do. img = chinh khung Gemini da xem."""
     if _fire_ros is None or meta is None:
         return
     from types import SimpleNamespace
     cls = min(_fire_tracker.keep_cls) if _fire_tracker.keep_cls else 0
-    _fire_ros.publish_fire([SimpleNamespace(box=b, score=1.0, cls=cls) for b in boxes], meta, shape,
-                           _fire_tracker.names)
+    tracks = [SimpleNamespace(box=b, score=1.0, cls=cls) for b in boxes]
+    _fire_ros.publish_fire(tracks, meta, img.shape, _fire_tracker.names)
+    if _fire_saver is not None:
+        _fire_saver(img, tracks, meta, "scan")   # YOLO sot ma Gemini thay: anh quy nhat de train lai
 
 
 class _FireRos:
@@ -423,7 +434,8 @@ class _FireRos:
 
     def publish_person(self, boxes, meta, shape, scan=False):
         """boxes [((x1, y1, x2, y2), diem)] theo diem anh khung `shape`; rong van gui (= da nhin, khong co ai).
-        scan: ket qua QUET ca khung (Gemini) - frame_id "scan"; fire_mission chi tha khi co lan quet con moi."""
+        scan: ket qua QUET ca khung (Gemini) - frame_id "scan". Chi de hien thi / canh bao phi cong: fire_mission KHONG
+        doc nguoi tu 20/11/2026 (bo ne nguoi, khong cho lan quet con moi truoc khi tha)."""
         from types import SimpleNamespace
         self.publish_fire([SimpleNamespace(box=b, score=sc, cls=0) for b, sc in boxes], meta, shape, {0: "person"},
                           self.pub_person, "scan" if scan else "drone_cam")
@@ -1297,7 +1309,7 @@ def main():
     p.add_argument("--fire-hz", type=float, default=0.0,
                    help="gioi han nhip suy dien fire; 0 = nhanh nhat co the")
     p.add_argument("--fire-save", default=None, metavar="DIR",
-                   help="luu khung co hop lua + nhan YOLO vao DIR de train lai (xem _FireSaver)")
+                   help="luu khung lua DA XAC NHAN (ra /fire/detections) luc drone ARM + nhan YOLO vao DIR de train lai (xem _FireSaver)")
     p.add_argument("--fire-verify", default=None, metavar="KEY",
                    help="Gemini xac nhan vet lua truoc khi ra /fire/detections: khoa service account "
                         ".json (Vertex) - xem fire_verify.py")

@@ -83,7 +83,7 @@ SCAN_SCHEMA = {"type": "OBJECT", "properties": {"fires": {"type": "ARRAY", "item
 PEOPLE_MODEL = "gemini-3.5-flash"
 PEOPLE_WIDTH = 960       # canh dai anh gui (hop tra ve 0-1000 nen doi lai theo khung goc, khong theo anh nho)
 PEOPLE_WORKERS = 4       # so yeu cau dong thoi
-PEOPLE_TIMEOUT = 8.0     # s: tra loi tre hon cong "du lieu do nguoi con moi" 4 s cua fire_mission thi het gia tri
+PEOPLE_TIMEOUT = 8.0     # s: tra loi tre hon thi nguoi da di cho khac, vong ngam do / dau X tren video sai cho
 PEOPLE_PROMPT = ("This is a frame from a downward-looking camera on a drone hovering a few metres above the ground (it "
                  "may be a simulation render). Find every human being or human figure visible. Seen from directly "
                  "above, a person appears as a round head on top of an oval body/shoulders, possibly with arms and "
@@ -161,7 +161,7 @@ class FireVerify:
         self._tok, self._exp, self._prune = None, 0.0, 0.0
         self._sess, self._last, self._sess_lock = None, 0.0, threading.Lock()
         self._scan_next, self._scan_busy = 0.0, False
-        # Quet ca khung thay lua ma YOLO SOT -> on_fire(hop, meta, shape): Gemini nam quyen quyet dinh (26/10/2026,
+        # Quet ca khung thay lua ma YOLO SOT -> on_fire(hop, meta, anh): Gemini nam quyen quyet dinh (26/10/2026,
         # SITL: to A0 toi YOLO 0 hop ke ca nguong 0.05, Gemini quet ra dung to giay). picture: tinh ca lua trong
         # anh in / man hinh - Gemini goi to A0 la real=false. Chi de thu to A0; mac dinh chi lua that.
         self.on_fire, self.picture = None, False
@@ -284,7 +284,7 @@ class FireVerify:
                   f"{len(chi_g)}, chi YOLO {len(chi_y)} ({dt:.1f} s)", flush=True)
             sot = [b for b, r in gem if b in chi_g and (r or self.picture)]
             if sot and self.on_fire is not None:
-                self.on_fire(sot, meta, img.shape)
+                self.on_fire(sot, meta, img)   # ca anh: run_gui luu khung nay (--fire-save)
                 print(f"[scan] Gemini nam quyen: {len(sot)} hop YOLO sot -> /fire/detections", flush=True)
             if self.scan_dir:
                 import os
@@ -329,7 +329,8 @@ class FireVerify:
             print(f"[nguoi] Gemini {len(boxes)} nguoi ({time.monotonic() - t0:.1f} s)", flush=True)
             if self.on_people is not None:
                 self.on_people(boxes, meta, shape)
-        except Exception as e:  # noqa: BLE001 - mat mang / 429: yeu cau ke tiep quet lai; fire_mission tu cho
+        except Exception as e:  # noqa: BLE001 - mat mang / 429: yeu cau ke tiep quet lai. Chi mat dau nguoi tren video:
+            # fire_mission KHONG doc nguoi tu 20/11/2026 -> 429 o day khong chan tha (sim 21/11/2026)
             print(f"[nguoi] loi {type(e).__name__}: {str(e)[:120]}", flush=True)
         finally:
             with self._people_lock:
