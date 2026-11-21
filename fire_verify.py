@@ -52,6 +52,11 @@ SCHEMA = {"type": "OBJECT", "properties": {"fire": {"type": "BOOLEAN"}}, "requir
 PICTURE = " For this test, flames in a printed photo, poster or on a screen DO count as fire."
 HOLD = 4.0      # ponytail: cho Gemini toi da 4 s (p90 2 s qua Wi-Fi lab). Bay bang 4G thi do lai.
 DOWN = 10.0     # loi mang/API -> bo qua Gemini 10 s roi thu lai
+# Giu ket noi toi Gemini (requests.Session): 21/11/2026 qua 4G moi lan requests.post mo TCP+TLS moi mat 276 ms
+# (p90 628). 4G/CGNAT cat TCP nghi IM LANG (khong FIN) -> dung lai ket noi chet = treo toi read timeout 8 s,
+# nen nghi qua IDLE s thi bo ca kho ket noi, mo moi. ponytail: 45 s doan, chua do nha mang cat sau bao lau.
+IDLE = 45.0
+POOL = 16       # >= so luong goi cung luc: 3 vet x 2 model + quet lua + 4 quet nguoi (mac dinh urllib3 10)
 RECHECK = 15.0  # vet bi bac 2 lan lien -> hoi lai sau 15 s: lua that bi bac nham khong bi giu mai
 RECHECK1 = 1.0  # bi bac LAN DAU -> hoi lai sau 1 s voi khung khac. 24/10 15:32 va 15:52: anh lua luc vua gio
                 # len (nghieng, nhoe) deu bi bac, lan hai dung. Hoi song song nen hoi lai som khong nghen ai.
@@ -154,6 +159,7 @@ class FireVerify:
         self.down = 0.0  # truoc moc nay (monotonic) coi nhu mat mang
         self.q = queue.Queue()
         self._tok, self._exp, self._prune = None, 0.0, 0.0
+        self._sess, self._last, self._sess_lock = None, 0.0, threading.Lock()
         self._scan_next, self._scan_busy = 0.0, False
         # Quet ca khung thay lua ma YOLO SOT -> on_fire(hop, meta, shape): Gemini nam quyen quyet dinh (26/10/2026,
         # SITL: to A0 toi YOLO 0 hop ke ca nguong 0.05, Gemini quet ra dung to giay). picture: tinh ca lua trong
@@ -349,9 +355,21 @@ class FireVerify:
         else:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
             h = {"x-goog-api-key": self.api_key}
-        r = requests.post(url, headers=h, json=body, timeout=(3, read_timeout))
+        r = self._http().post(url, headers=h, json=body, timeout=(3, read_timeout))
         r.raise_for_status()
         return json.loads(r.json()["candidates"][0]["content"]["parts"][-1]["text"])
+
+    def _http(self):
+        """Session dung chung moi luong; nghi > IDLE s thi thay Session moi (ket noi cu co the da chet)."""
+        now = time.monotonic()
+        with self._sess_lock:
+            if self._sess is None or now - self._last > IDLE:
+                if self._sess is not None:
+                    self._sess.close()
+                self._sess = requests.Session()
+                self._sess.mount("https://", requests.adapters.HTTPAdapter(pool_maxsize=POOL))
+            self._last = now
+            return self._sess
 
     def _token(self):
         """Service account -> access token (pyjwt + cryptography co san tren Jetson), lam moi truoc 5 phut."""
@@ -610,6 +628,11 @@ def _selfcheck():
     mat = NS(id=4, box=(300, 100, 360, 260), conf=0.31)
     pv.down = time.monotonic() + 10                     # mat mang: hien nhu truoc khi co Gemini
     assert pv.filter(img, [mat]) == [mat] and pv.tag(mat) == " YOLO"
+    hs = FireVerify(None)
+    a1, a2 = hs._http(), hs._http()
+    assert a1 is a2 and a1.get_adapter("https://x").poolmanager.connection_pool_kw["maxsize"] == POOL, "dung lai Session"
+    hs._last -= IDLE + 1
+    assert hs._http() is not a1, "nghi qua IDLE -> Session moi"
     print("OK")
 
 
