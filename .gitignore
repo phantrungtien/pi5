@@ -34,3 +34,7 @@ flight_logs/*.BIN
 
 # Video ghi tu run_gui.Recorder (--record), tu xoa sau 3 ngay.
 recordings/
+
+# Anh/khung do thermal/mlx_snap.py, mlx_test.py ghi de moi lan chay.
+thermal/*.png
+thermal/*.npy
