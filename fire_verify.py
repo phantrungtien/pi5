@@ -140,7 +140,6 @@ def _di(s, t, now, hold=HOLD, yolo_only=YOLO_ONLY):
 class FireVerify:
     HOLD, YOLO_ONLY, RECHECK, RECHECK1, WHAT = HOLD, YOLO_ONLY, RECHECK, RECHECK1, "lua"
     CROP = (1.5, 128)           # crop(wide, lo): anh cat gui Gemini
-    RECHECK_OK = float("inf")   # lua: da xac nhan thi giu (dang nham tha, khong de vet chop tat)
     near = staticmethod(_gan)   # vet moi la vat cu (dung chung o, khong hoi lai)?
 
     def __init__(self, key, models=MODELS, scan_dir=None):
@@ -206,14 +205,12 @@ class FireVerify:
                 s = [None, now, t.box, now, 0]  # o[4]: so lan "khong" lien tiep
             self.v[t.id] = s
         s[2], s[3] = t.box, now  # o di theo vet
-        # "ok" cung het han sau RECHECK_OK: hoi lai nhung VAN HIEN trong luc cho (giu "ok"), Gemini noi khong moi an
-        lai_ok = s[0] == "ok" and now - s[1] > self.RECHECK_OK and now >= self.down
-        if (lai_ok or s[0] is None or (s[0] == "khong" and now - s[1] > (self.RECHECK if s[4] >= 2 else self.RECHECK1))
+        if (s[0] is None or (s[0] == "khong" and now - s[1] > (self.RECHECK if s[4] >= 2 else self.RECHECK1))
                 or (s[0] == "yolo" and now >= self.down)):
             if now < self.down:
                 s[1], s[0] = now, "yolo"
             else:
-                s[1], s[0] = now, ("ok" if lai_ok else "?")
+                s[1], s[0] = now, "?"
                 self.q.put((s, cv2.imencode(".jpg", crop(img, t.box, True, *self.CROP), [cv2.IMWRITE_JPEG_QUALITY, 90])[1]))
         return s
 
@@ -398,10 +395,8 @@ class PersonVerify(FireVerify):
     # 21/11/2026 poster ABB treo tuong (ve nguoi) thinh thoang bi YOLO bao PERSON va Gemini noi NGUOI: anh cat
     # 1.5x/128 px chi thay hinh mo, khong thay khung tranh/tuong. Rong 3x, toi thieu 256 px -> thay khung + chu.
     CROP = (3.0, 256)
-    # 21/11 cung poster do: bi bac 4 lan, lan hoi lai 11:15:03 Gemini noi NGUOI -> giu "ok" 10 phut toi khi khoi dong
-    # lai (khung tinh luc sau: cu va moi deu 0/20 NGUOI - mot khung la, chua biet vi sao). Hoi lai "ok" moi 15 s:
-    # mot lan noi nham chi song ~15 s. Nguoi that bi noi nham "khong" -> an ~RECHECK1 + 1 lan hoi (~4 s).
-    RECHECK_OK = 15.0
+    # Da "ok" thi giu toi khi mat vet (user 21/11/2026: khong hoi lai - nguoi that khong chop tat). Gia: poster bi
+    # noi nham NGUOI mot lan (11:15:03, sau 4 lan bac) la giu toi khi YOLO mat vet. Hoi lai dinh ky: xem 327cfba.
 
     def __init__(self, key, models=("gemini-3.1-flash-lite",)):
         super().__init__(key, models)
@@ -609,16 +604,6 @@ def _selfcheck():
     assert pv.filter(img, [day2]) == [] and len(hoi) == n, "YOLO bat lai day pin -> an theo, khong hoi lai"
     pv.ask = ans(True)
     ng = NS(id=3, box=(700, 150, 820, 470), conf=0.8)
-    pv.filter(img, [ng])
-    wait(pv.v[3], "ok")
-    pv.RECHECK_OK, n = 0.05, len(hoi)                   # "ok" het han -> hoi lai, VAN HIEN trong luc cho
-    time.sleep(0.06)
-    pv.ask = ans(False)
-    assert pv.filter(img, [ng]) == [ng] and len(hoi) in (n, n + 1), "ok het han: van hien khi dang hoi lai"
-    wait(pv.v[3], "khong")
-    assert pv.filter(img, [ng]) == [] and len(hoi) == n + 1, "hoi lai noi khong (poster) -> an"
-    pv.RECHECK_OK, pv.ask = float("inf"), ans(True)
-    time.sleep(PersonVerify.RECHECK1 + 0.05)
     pv.filter(img, [ng])
     wait(pv.v[3], "ok")
     assert pv.filter(img, [day2, ng]) == [ng] and pv.tag(ng) == " AI:OK"
