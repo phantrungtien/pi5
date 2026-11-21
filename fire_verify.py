@@ -88,12 +88,12 @@ PEOPLE_SCHEMA = {"type": "OBJECT", "properties": {"people": {"type": "ARRAY", "i
     "box_2d": {"type": "ARRAY", "items": {"type": "INTEGER"}}}, "required": ["box_2d"]}}}, "required": ["people"]}
 
 
-def crop(img, box, mark=False):
-    """Vuong quanh hop, rong gap 1.5 canh dai hop (Gemini can ngu canh: den tran hay lua), toi thieu 128 px.
+def crop(img, box, mark=False, wide=1.5, lo=128):
+    """Vuong quanh hop, rong gap `wide` canh dai hop (Gemini can ngu canh: den tran hay lua), toi thieu `lo` px.
     mark: ve khung xanh (cyan - khong lan voi mau lua) quanh hop, cho PROMPT hoi dung vat trong khung."""
     x1, y1, x2, y2 = box
     h, w = img.shape[:2]
-    s = max(1.5 * max(x2 - x1, y2 - y1), 128)
+    s = max(wide * max(x2 - x1, y2 - y1), lo)
     cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
     ox, oy = int(max(0, cx - s / 2)), int(max(0, cy - s / 2))
     c = img[oy:int(min(h, cy + s / 2)), ox:int(min(w, cx + s / 2))]
@@ -139,6 +139,8 @@ def _di(s, t, now, hold=HOLD, yolo_only=YOLO_ONLY):
 
 class FireVerify:
     HOLD, YOLO_ONLY, RECHECK, RECHECK1, WHAT = HOLD, YOLO_ONLY, RECHECK, RECHECK1, "lua"
+    CROP = (1.5, 128)           # crop(wide, lo): anh cat gui Gemini
+    RECHECK_OK = float("inf")   # lua: da xac nhan thi giu (dang nham tha, khong de vet chop tat)
     near = staticmethod(_gan)   # vet moi la vat cu (dung chung o, khong hoi lai)?
 
     def __init__(self, key, models=MODELS, scan_dir=None):
@@ -204,13 +206,15 @@ class FireVerify:
                 s = [None, now, t.box, now, 0]  # o[4]: so lan "khong" lien tiep
             self.v[t.id] = s
         s[2], s[3] = t.box, now  # o di theo vet
-        if (s[0] is None or (s[0] == "khong" and now - s[1] > (self.RECHECK if s[4] >= 2 else self.RECHECK1))
+        # "ok" cung het han sau RECHECK_OK: hoi lai nhung VAN HIEN trong luc cho (giu "ok"), Gemini noi khong moi an
+        lai_ok = s[0] == "ok" and now - s[1] > self.RECHECK_OK and now >= self.down
+        if (lai_ok or s[0] is None or (s[0] == "khong" and now - s[1] > (self.RECHECK if s[4] >= 2 else self.RECHECK1))
                 or (s[0] == "yolo" and now >= self.down)):
             if now < self.down:
                 s[1], s[0] = now, "yolo"
             else:
-                s[1], s[0] = now, "?"
-                self.q.put((s, cv2.imencode(".jpg", crop(img, t.box, mark=True), [cv2.IMWRITE_JPEG_QUALITY, 90])[1]))
+                s[1], s[0] = now, ("ok" if lai_ok else "?")
+                self.q.put((s, cv2.imencode(".jpg", crop(img, t.box, True, *self.CROP), [cv2.IMWRITE_JPEG_QUALITY, 90])[1]))
         return s
 
     def _worker(self):
@@ -370,11 +374,14 @@ class FireVerify:
 
 # Hop PERSON cua YOLO COCO (run_gui --detect-only): 07/11/2026 day pin cong sat ong kinh bi bao PERSON 0.3-0.54,
 # chay khap mep duoi (bay 29/10 giua, ban 07/11 goc trai) -> vung loc co dinh (on_legs) khong theo kip.
-PERSON_PROMPT = ("This image is a crop from a downward-looking drone camera around a region that the onboard "
-                 "person detector flagged; the cyan rectangle marks that region. Is there a real human being (a whole "
-                 "person or a visible body part such as a head, arm, hand or leg) INSIDE the cyan rectangle? Cables, "
+PERSON_PROMPT = ("This image is a crop from a drone camera around a region that the onboard person detector "
+                 "flagged; the cyan rectangle marks that region. Is there a real, physically present human being (a "
+                 "whole person or a visible body part such as a head, arm, hand or leg) INSIDE the cyan rectangle? "
+                 "Answer false if the figure is only an image of a person: a photo, poster, banner, painting, drawing, "
+                 "print on paper, fabric or packaging, or a picture on a screen, monitor or TV - signs are a frame or "
+                 "paper/screen border around it, text or logos next to it, or lying flat on a wall or surface. Cables, "
                  "wires, battery leads, drone parts (landing legs, propellers, frame), shadows, empty clothes or bags, "
-                 "statues and pictures of people do NOT count.")
+                 "mannequins and statues do NOT count either.")
 PERSON_SCHEMA = {"type": "OBJECT", "properties": {"person": {"type": "BOOLEAN"}}, "required": ["person"]}
 
 
@@ -388,6 +395,13 @@ class PersonVerify(FireVerify):
     # chi CHONG NHAU moi la vat cu: _gan (tam cach <= canh dai) voi hop day pin 530 px nuot ca nua khung ->
     # nguoi dung canh bi an theo "khong" cua day (selfcheck 07/11)
     near = staticmethod(lambda a, b: iou(a, b) >= 0.3)
+    # 21/11/2026 poster ABB treo tuong (ve nguoi) thinh thoang bi YOLO bao PERSON va Gemini noi NGUOI: anh cat
+    # 1.5x/128 px chi thay hinh mo, khong thay khung tranh/tuong. Rong 3x, toi thieu 256 px -> thay khung + chu.
+    CROP = (3.0, 256)
+    # 21/11 cung poster do: bi bac 4 lan, lan hoi lai 11:15:03 Gemini noi NGUOI -> giu "ok" 10 phut toi khi khoi dong
+    # lai (khung tinh luc sau: cu va moi deu 0/20 NGUOI - mot khung la, chua biet vi sao). Hoi lai "ok" moi 15 s:
+    # mot lan noi nham chi song ~15 s. Nguoi that bi noi nham "khong" -> an ~RECHECK1 + 1 lan hoi (~4 s).
+    RECHECK_OK = 15.0
 
     def __init__(self, key, models=("gemini-3.1-flash-lite",)):
         super().__init__(key, models)
@@ -595,6 +609,16 @@ def _selfcheck():
     assert pv.filter(img, [day2]) == [] and len(hoi) == n, "YOLO bat lai day pin -> an theo, khong hoi lai"
     pv.ask = ans(True)
     ng = NS(id=3, box=(700, 150, 820, 470), conf=0.8)
+    pv.filter(img, [ng])
+    wait(pv.v[3], "ok")
+    pv.RECHECK_OK, n = 0.05, len(hoi)                   # "ok" het han -> hoi lai, VAN HIEN trong luc cho
+    time.sleep(0.06)
+    pv.ask = ans(False)
+    assert pv.filter(img, [ng]) == [ng] and len(hoi) in (n, n + 1), "ok het han: van hien khi dang hoi lai"
+    wait(pv.v[3], "khong")
+    assert pv.filter(img, [ng]) == [] and len(hoi) == n + 1, "hoi lai noi khong (poster) -> an"
+    pv.RECHECK_OK, pv.ask = float("inf"), ans(True)
+    time.sleep(PersonVerify.RECHECK1 + 0.05)
     pv.filter(img, [ng])
     wait(pv.v[3], "ok")
     assert pv.filter(img, [day2, ng]) == [ng] and pv.tag(ng) == " AI:OK"
