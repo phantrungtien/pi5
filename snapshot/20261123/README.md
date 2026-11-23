@@ -14,9 +14,9 @@
 | `GRIP_NEUTRAL` | 1900 (mở) | **1100 (đóng)** | |
 | `RTL_ALT_M` | 3 | **5** | = độ cao bay tìm |
 | `RC_OPTIONS` | 32 | **0** | bỏ bit 5 (kiểm ga khi tín hiệu 0 lúc ARM) |
-| `MOT_THST_HOVER` / `MOT_THST_EXPO` | 0.176 / 0.58 | **0.2 / 0.6** | `MOT_HOVER_LEARN` 2 sẽ tự học lại khi bay |
+| `MOT_THST_HOVER` / `MOT_THST_EXPO` | 0.176 / 0.58 | **0.2 / 0.6** | MP "Initial Parameters" cánh 10", 6S (cả lọc gyro / ATC / pin); `MOT_HOVER_LEARN` 2 tự học lại |
 | `INS_GYRO_FILTER` | 46 | **42** | |
 | `ATC_RAT_RLL/PIT_FLTD/FLTT`, `ATC_RAT_YAW_FLTT` | 23 | **21** | |
-| `MAV2_*` (SERIAL1 = TELEM1) | EXTRA1 10, EXTRA2 4, POSITION 3, EXT_STAT 2... | **tất cả 0** | ⚠ cổng SiK: GCS phải tự xin luồng |
+| `MAV2_*` (SERIAL1 = TELEM1) | EXTRA1 10, EXTRA2 4, POSITION 3, EXT_STAT 2... | **tất cả 0** | bình thường: GCS chỉ đặt khi mở (user 23/11) |
 | `MAV4_EXT_STAT` / `MAV4_RC_CHAN` (SERIAL7) | 10 / 10 | **0 / 0** | |
 | `MIS_TOTAL` | 8 | 0 | đã xoá đường bay |
