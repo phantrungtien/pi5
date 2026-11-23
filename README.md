@@ -1,5 +1,12 @@
 # pi5 — máy tính nhúng của drone
 
+> **Từ 10/2026 chạy trên Jetson Orin Nano Super** (`trungtien-drone`, user `robomango`, repo đặt ở
+> `~/jetson`; tên repo GitHub vẫn là `pi5`). Service: `mjpeg-stream` (camera 4K -> YOLO lửa/người +
+> Gemini xác nhận -> H.264 về tablet, ghi 4K lúc ARM) và `drone-ros` (MAVROS + fire_locator + ros2_bridge
+> 8765, xem `systemd/`). Task chữa cháy ở repo [Firefighting-drone](https://github.com/phantrungtien/Firefighting-drone),
+> tiến độ chung ở `TIEN_DO_2026-11-23.md` + `CHECKLIST.md` bên đó. Phần dưới đây (Pi 5, `/home/hoaibac`,
+> Docker) là ghi chép gốc, giữ để tham khảo.
+
 Mọi thứ chạy trên Raspberry Pi 5 gắn trên drone: đọc webcam, bám người, phát MJPEG
 ra cổng 8080 cho trạm mặt đất [`GUI_NATIVE`](https://github.com/phantrungtien/GUI_Groundstation).
 
@@ -66,6 +73,19 @@ xem *Bẫy đã gặp* bên dưới.
 container: thay `cv2.VideoCapture` bằng `GstCap`/`RosCap`, thay `cv2.imshow` bằng
 nén JPEG đẩy sang `mjpeg_server`. `follow_control.py` sinh lệnh bám, `track.py` là
 bộ theo vết. Các tệp `_*.py` là script đo lặt vặt (int8, spin, kích thước, độ chính xác).
+
+### Jetson — thêm từ 10/2026
+
+| Tệp / thư mục | Việc |
+|---|---|
+| `fire_verify.py` | Gemini xác nhận hộp YOLO lửa / người; mất mạng hoặc chậm quá `HOLD` 4 s -> chỉ YOLO (điểm >= 0.35) |
+| `fire_mission_real.yaml` | Tham số task drone thật: tìm 2-5 m (mặc định 5), thả 3 m, phạm vi <= 10 m, zoom <= x2 |
+| `dds_env.sh`, `cyclonedds_*.xml` | Chọn DDS qua Tailscale hay chỉ nội bộ, một lần mỗi lần boot |
+| `flight_logs/` | `fc_logs.py` tải log .BIN qua USB if02; `fc_snapshot.py` chụp toàn bộ tham số FC |
+| `snapshot/<ngay>/` | Ảnh chụp tham số FC + ROS: `20261105`, `20261123` (README mỗi thư mục ghi khác biệt) |
+| `calib/`, `calib_charuco.py` | Calib camera 4K / 720p (ChArUco, RMS 0.66 px) |
+| `thermal/` | Camera nhiệt MLX90640 I2C (`/dev/i2c-7`, 0x33); bản chép ở Firefighting-drone `thermal/` |
+| `h264_feedback.py`, `latency_stamp.py`, `do_tre*.pdf` | Đo độ trễ video / nhận diện (báo cáo 21/11/2026) |
 
 ### `drone-img/` — image Docker nền
 
